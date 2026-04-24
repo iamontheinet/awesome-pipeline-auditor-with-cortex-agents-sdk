@@ -1,0 +1,29 @@
+spec:
+  containers:
+  - name: auditor
+    image: sfsenorthamerica-gen-ai-hol.registry.snowflakecomputing.com/dash_spcs/apps/dash_repo/pipeline-auditor:latest
+    env:
+      NODE_ENV: production
+      PORT: "3001"
+      SNOW_CONNECTION: dash-builder-si
+      CORTEX_CODE_AGENT_SDK_SKIP_VERSION_CHECK: "1"
+    secrets:
+    - snowflakeSecret: DASH_SPCS.APPS.DASH_PAT_SECRET
+      secretKeyRef: username
+      envVarName: SNOWFLAKE_PAT_USER
+    - snowflakeSecret: DASH_SPCS.APPS.DASH_PAT_SECRET
+      secretKeyRef: password
+      envVarName: SNOWFLAKE_PAT_PASSWORD
+    resources:
+      requests:
+        memory: 512Mi
+        cpu: "0.5"
+      limits:
+        memory: 2Gi
+        cpu: "1"
+  endpoints:
+  - name: auditor-ui
+    port: 3001
+    public: true
+  networkPolicyConfig:
+    allowInternetEgress: true

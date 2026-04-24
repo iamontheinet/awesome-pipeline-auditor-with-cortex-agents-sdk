@@ -6,7 +6,6 @@ export interface StatusEvent {
   type: "status";
   message: string;
   database?: string;
-  connection?: string;
 }
 
 export interface ToolProgressEvent {
@@ -140,6 +139,7 @@ export interface AuditSummary {
 
 export interface AuditReport {
   database: string;
+  schema?: string;
   audit_timestamp: string;
   pipeline_inventory: PipelineInventory;
   findings: Finding[];

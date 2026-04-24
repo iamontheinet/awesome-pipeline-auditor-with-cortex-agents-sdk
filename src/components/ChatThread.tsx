@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, useCallback } from "react";
 import {
   Box,
   Paper,
@@ -13,34 +13,47 @@ import {
   LinearProgress,
   Chip,
   Button,
+  CircularProgress,
 } from "@mui/material";
 import {
   ExpandMore as ExpandMoreIcon,
   AutoAwesome as ThinkingIcon,
-  Person as UserIcon,
   SmartToy as BotIcon,
   Assessment as ReportIcon,
   Timeline as TimelineIcon,
   Download as DownloadIcon,
+  MailOutline as MailIcon,
+  CheckCircle as CheckIcon,
+  Storage as DatabaseIcon,
 } from "@mui/icons-material";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { ChatMessage, AuditReport, ToolProgressEvent } from "../types";
+import type { ChatMessage, AuditReport, ToolProgressEvent, Finding } from "../types";
 import { ReportPanel } from "./ReportPanel";
+import type { SuggestFixState } from "../hooks/useSuggestFix";
 import { AuditPhase, ActivityFeed } from "./AuditSidebar";
 
-// Dark-themed scrollbar styles
-const scrollbarSx = {
-  "&::-webkit-scrollbar": { width: 6 },
-  "&::-webkit-scrollbar-track": { bgcolor: "transparent" },
-  "&::-webkit-scrollbar-thumb": {
-    bgcolor: "rgba(255,255,255,0.1)",
-    borderRadius: 3,
-    "&:hover": { bgcolor: "rgba(255,255,255,0.2)" },
-  },
-  scrollbarWidth: "thin" as const,
-  scrollbarColor: "rgba(255,255,255,0.1) transparent",
-};
+import type { Theme } from "@mui/material";
+
+// Re-export Finding so callers don't need a separate import for the callback
+export type { Finding };
+
+// Theme-aware scrollbar styles
+function getScrollbarSx(theme: Theme) {
+  const thumb = alpha(theme.palette.text.primary, 0.1);
+  const thumbHover = alpha(theme.palette.text.primary, 0.2);
+  return {
+    "&::-webkit-scrollbar": { width: 6 },
+    "&::-webkit-scrollbar-track": { bgcolor: "transparent" },
+    "&::-webkit-scrollbar-thumb": {
+      bgcolor: thumb,
+      borderRadius: 3,
+      "&:hover": { bgcolor: thumbHover },
+    },
+    scrollbarWidth: "thin" as const,
+    scrollbarColor: `${thumb} transparent`,
+  };
+}
 
 interface ChatThreadProps {
   messages: ChatMessage[];
@@ -48,20 +61,34 @@ interface ChatThreadProps {
   toolProgress?: ToolProgressEvent[];
   isLoading?: boolean;
   onDownload?: () => void;
+  onEmail?: () => Promise<void> | void;
+  onSuggestFix?: (index: number, finding: Finding) => void;
+  onDismissFix?: () => void;
+  onSendFollowUp?: (message: string) => void;
+  fixState?: SuggestFixState;
+  canExecute?: boolean;
 }
 
-export function ChatThread({ messages, report, toolProgress = [], isLoading = false, onDownload }: ChatThreadProps) {
+export function ChatThread({ messages, report, toolProgress = [], isLoading = false, onDownload, onEmail, onSuggestFix, onDismissFix, onSendFollowUp, fixState, canExecute }: ChatThreadProps) {
   const theme = useTheme();
   const reportRef = useRef<HTMLDivElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const prevReportRef = useRef<AuditReport | null>(null);
+  const wasLoadingRef = useRef(false);
+  const [emailState, setEmailState] = useState<"idle" | "sending" | "sent">("idle");
 
-  // Auto-scroll to bottom during streaming
-  useEffect(() => {
-    if (!report) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  const handleEmail = useCallback(async (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (!onEmail || emailState === "sending") return;
+    setEmailState("sending");
+    try {
+      await onEmail();
+      setEmailState("sent");
+      setTimeout(() => setEmailState("idle"), 3000);
+    } catch {
+      setEmailState("idle");
     }
-  }, [messages, report]);
+  }, [onEmail, emailState]);
 
   // Auto-scroll to report accordion when it first appears
   useEffect(() => {
@@ -74,15 +101,25 @@ export function ChatThread({ messages, report, toolProgress = [], isLoading = fa
     }
   }, [report]);
 
+  // Scroll to top when audit finishes (isLoading transitions false → lets user see the report)
+  useEffect(() => {
+    if (wasLoadingRef.current && !isLoading) {
+      setTimeout(() => {
+        containerRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+      }, 300);
+    }
+    wasLoadingRef.current = isLoading;
+  }, [isLoading]);
+
   if (messages.length === 0) return null;
 
   return (
-    <Box sx={{ p: 2, overflow: "auto", height: "100%", display: "flex", flexDirection: "column", ...scrollbarSx }}>
+    <Box ref={containerRef} sx={{ p: 2, overflow: "auto", height: "100%", display: "flex", flexDirection: "column", ...getScrollbarSx(theme) }}>
       <Stack spacing={2} sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
         {messages.map((msg) => (
           <Box key={msg.id} sx={{ flexShrink: 0 }}>
             {msg.role === "user" ? (
-              <UserMessage text={msg.text} />
+              <AuditConfigBanner text={msg.text} />
             ) : (
               <AssistantMessage message={msg} />
             )}
@@ -91,7 +128,7 @@ export function ChatThread({ messages, report, toolProgress = [], isLoading = fa
 
         {/* Audit progress + activity feed — shows immediately when audit starts, collapses when done */}
         {(isLoading || toolProgress.length > 0) && (
-          <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <Box sx={{ flexShrink: 0 }}>
             <AuditProgressAccordion toolProgress={toolProgress} isLoading={isLoading} />
           </Box>
         )}
@@ -168,13 +205,34 @@ export function ChatThread({ messages, report, toolProgress = [], isLoading = fa
                       Download Report
                     </Button>
                   )}
+                  {onEmail && (
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      disabled={emailState === "sending"}
+                      startIcon={emailState === "sending" ? <CircularProgress size={14} /> : emailState === "sent" ? <CheckIcon sx={{ fontSize: 16, color: "success.main" }} /> : <MailIcon sx={{ fontSize: 16 }} />}
+                      onClick={handleEmail}
+                      sx={{
+                        textTransform: "none",
+                        fontSize: "0.7rem",
+                        borderRadius: 1.5,
+                        borderColor: emailState === "sent" ? alpha(theme.palette.success.main, 0.5) : alpha(theme.palette.primary.main, 0.3),
+                        color: emailState === "sent" ? "success.main" : undefined,
+                        "&:hover": { borderColor: emailState === "sent" ? "success.main" : "primary.main" },
+                        mr: 1,
+                      }}
+                    >
+                      Email Report
+                    </Button>
+                  )}
                 </Stack>
               </AccordionSummary>
-              <AccordionDetails sx={{ p: 0, ...scrollbarSx }}>
+              <AccordionDetails sx={{ p: 0, ...getScrollbarSx(theme) }}>
                 <Divider />
-                <ReportPanel report={report} />
-                {onDownload && (
-                  <Box sx={{ px: 2, py: 1.5, display: "flex", justifyContent: "flex-end", borderTop: `1px solid ${alpha(theme.palette.divider, 0.3)}` }}>
+                <ReportPanel report={report} onSuggestFix={onSuggestFix} onDismissFix={onDismissFix} onSendFollowUp={onSendFollowUp} fixState={fixState} canExecute={canExecute} />
+                {(onDownload || onEmail) && (
+                  <Box sx={{ px: 2, py: 1.5, display: "flex", justifyContent: "flex-end", gap: 1, borderTop: `1px solid ${alpha(theme.palette.divider, 0.3)}` }}>
+                    {onDownload && (
                     <Button
                       variant="outlined"
                       size="small"
@@ -190,6 +248,26 @@ export function ChatThread({ messages, report, toolProgress = [], isLoading = fa
                     >
                       Download Report
                     </Button>
+                    )}
+                    {onEmail && (
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      disabled={emailState === "sending"}
+                      startIcon={emailState === "sending" ? <CircularProgress size={14} /> : emailState === "sent" ? <CheckIcon sx={{ fontSize: 16, color: "success.main" }} /> : <MailIcon sx={{ fontSize: 16 }} />}
+                      onClick={() => handleEmail()}
+                      sx={{
+                        textTransform: "none",
+                        fontSize: "0.7rem",
+                        borderRadius: 1.5,
+                        borderColor: emailState === "sent" ? alpha(theme.palette.success.main, 0.5) : alpha(theme.palette.primary.main, 0.3),
+                        color: emailState === "sent" ? "success.main" : undefined,
+                        "&:hover": { borderColor: emailState === "sent" ? "success.main" : "primary.main" },
+                      }}
+                    >
+                      Email Report
+                    </Button>
+                    )}
                   </Box>
                 )}
               </AccordionDetails>
@@ -197,23 +275,25 @@ export function ChatThread({ messages, report, toolProgress = [], isLoading = fa
           </Box>
         )}
 
-        <div ref={bottomRef} />
       </Stack>
     </Box>
   );
 }
 
-// Scrollbar styles for inner containers
-const innerScrollbarSx = {
-  "&::-webkit-scrollbar": { width: 4 },
-  "&::-webkit-scrollbar-track": { bgcolor: "transparent" },
-  "&::-webkit-scrollbar-thumb": {
-    bgcolor: "rgba(255,255,255,0.08)",
-    borderRadius: 2,
-  },
-  scrollbarWidth: "thin" as const,
-  scrollbarColor: "rgba(255,255,255,0.08) transparent",
-};
+// Theme-aware scrollbar styles for inner containers
+function getInnerScrollbarSx(theme: Theme) {
+  const thumb = alpha(theme.palette.text.primary, 0.08);
+  return {
+    "&::-webkit-scrollbar": { width: 4 },
+    "&::-webkit-scrollbar-track": { bgcolor: "transparent" },
+    "&::-webkit-scrollbar-thumb": {
+      bgcolor: thumb,
+      borderRadius: 2,
+    },
+    scrollbarWidth: "thin" as const,
+    scrollbarColor: `${thumb} transparent`,
+  };
+}
 
 function AuditProgressAccordion({
   toolProgress,
@@ -245,10 +325,6 @@ function AuditProgressAccordion({
       expanded={expanded}
       onChange={(_, exp) => setExpanded(exp)}
       sx={{
-        flex: 1,
-        minHeight: 0,
-        display: "flex",
-        flexDirection: "column",
         boxShadow: "none",
         border: `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
         borderRadius: "12px !important",
@@ -256,9 +332,6 @@ function AuditProgressAccordion({
         overflow: "hidden",
         bgcolor: alpha(theme.palette.info.main, 0.02),
         position: "relative",
-        "& .MuiCollapse-root": { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" },
-        "& .MuiCollapse-wrapper": { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" },
-        "& .MuiCollapse-wrapperInner": { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" },
       }}
     >
       <AccordionSummary
@@ -305,13 +378,13 @@ function AuditProgressAccordion({
           />
         )}
       </AccordionSummary>
-      <AccordionDetails sx={{ p: 0, flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <AccordionDetails sx={{ p: 0, display: "flex", flexDirection: "column" }}>
         <Divider />
         <Box sx={{ px: 2, pt: 1.5, pb: 1, flexShrink: 0 }}>
           <AuditPhase toolProgress={toolProgress} isLoading={isLoading ?? false} />
         </Box>
         <Divider sx={{ mx: 2, flexShrink: 0 }} />
-        <Box sx={{ flex: 1, minHeight: 0, overflow: "auto", ...innerScrollbarSx }}>
+        <Box sx={{ px: 0 }}>
           <ActivityFeed toolProgress={toolProgress} isLoading={isLoading ?? false} />
         </Box>
       </AccordionDetails>
@@ -319,44 +392,101 @@ function AuditProgressAccordion({
   );
 }
 
-function UserMessage({ text }: { text: string }) {
+const SCOPE_LABELS: Record<string, string> = {
+  tables_freshness: "Tables & Freshness",
+  dynamic_tables: "Dynamic Tables",
+  tasks: "Tasks",
+  views: "Views",
+  streams: "Streams",
+  pipes: "Pipes",
+  procedures: "Stored Procedures",
+};
+
+function AuditConfigBanner({ text }: { text: string }) {
   const theme = useTheme();
+
+  // Parse "Audit DB database, schema SCHEMA, scope A|B|C" or "Audit DB database, scope A|B"
+  const dbMatch = text.match(/Audit\s+(\S+)\s+database/);
+  const schemaMatch = text.match(/schema\s+(\S+?)(?:,|$)/);
+  const scopeMatch = text.match(/scope\s+(.+)$/);
+  const database = dbMatch?.[1] || "";
+  const schema = schemaMatch?.[1] || "";
+  const scopes = scopeMatch?.[1]?.split("|").filter(Boolean) || [];
+
   return (
-    <Stack direction="row" spacing={1.5} alignItems="flex-start">
-      <Box
+    <Paper
+      elevation={0}
+      sx={{
+        px: 2,
+        py: 1,
+        borderRadius: 2,
+        bgcolor: alpha(theme.palette.primary.main, 0.04),
+        border: `1px solid ${alpha(theme.palette.primary.main, 0.12)}`,
+        display: "flex",
+        alignItems: "center",
+        gap: 1,
+        overflow: "hidden",
+      }}
+    >
+      <DatabaseIcon sx={{ fontSize: 18, color: "primary.main", flexShrink: 0 }} />
+      <Typography variant="caption" sx={{ fontWeight: 600, color: "text.secondary", fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: 0.5, flexShrink: 0 }}>
+        Auditing
+      </Typography>
+      <Chip
+        label={database}
+        size="small"
         sx={{
-          width: 28,
-          height: 28,
-          borderRadius: "50%",
-          bgcolor: alpha(theme.palette.primary.main, 0.15),
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
+          fontSize: "0.65rem",
+          height: 20,
+          fontWeight: 500,
+          bgcolor: alpha(theme.palette.info.main, 0.08),
+          color: "text.secondary",
+          border: `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
           flexShrink: 0,
-          mt: 0.5,
         }}
-      >
-        <UserIcon sx={{ fontSize: 16, color: "primary.main" }} />
-      </Box>
-      <Paper
-        elevation={0}
-        sx={{
-          px: 2,
-          py: 1.5,
-          borderRadius: 2,
-          bgcolor:
-            theme.palette.mode === "dark"
-              ? alpha(theme.palette.primary.main, 0.08)
-              : alpha(theme.palette.primary.main, 0.05),
-          border: `1px solid ${alpha(theme.palette.primary.main, 0.15)}`,
-          maxWidth: "85%",
-        }}
-      >
-        <Typography variant="body2" sx={{ lineHeight: 1.6 }}>
-          {text}
+      />
+      {schema && (
+        <>
+          <Typography sx={{ color: alpha(theme.palette.text.secondary, 0.4), fontSize: "0.9rem", flexShrink: 0 }}>
+            /
+          </Typography>
+          <Chip
+            label={schema}
+            size="small"
+            sx={{
+              fontSize: "0.65rem",
+              height: 20,
+              fontWeight: 500,
+              bgcolor: alpha(theme.palette.info.main, 0.08),
+              color: "text.secondary",
+              border: `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
+              flexShrink: 0,
+            }}
+          />
+        </>
+      )}
+      {scopes.length > 0 && (
+        <Typography sx={{ color: alpha(theme.palette.text.secondary, 0.4), fontSize: "0.9rem", flexShrink: 0 }}>
+          /
         </Typography>
-      </Paper>
-    </Stack>
+      )}
+      {scopes.length > 0 && scopes.map((s) => (
+        <Chip
+          key={s}
+          label={SCOPE_LABELS[s] || s.replace(/_/g, " ")}
+          size="small"
+          sx={{
+            fontSize: "0.65rem",
+            height: 20,
+            fontWeight: 500,
+            bgcolor: alpha(theme.palette.info.main, 0.08),
+            color: "text.secondary",
+            border: `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
+            flexShrink: 0,
+          }}
+        />
+      ))}
+    </Paper>
   );
 }
 
@@ -464,7 +594,7 @@ function AssistantMessage({ message }: { message: ChatMessage }) {
               },
               "& pre": {
                 bgcolor: alpha(theme.palette.grey[900], 0.8),
-                color: "#e0e0e0",
+                    color: "text.secondary",
                 p: 1.5,
                 borderRadius: 1,
                 overflow: "auto",

@@ -8,6 +8,7 @@ import {
   alpha,
   useTheme,
   Divider,
+  type Theme,
 } from "@mui/material";
 import {
   Storage as SqlIcon,
@@ -30,18 +31,22 @@ import {
 } from "recharts";
 import type { AuditReport, ToolProgressEvent } from "../types";
 
-// Scrollbar styles matching ChatThread
-const scrollbarSx = {
-  "&::-webkit-scrollbar": { width: 6 },
-  "&::-webkit-scrollbar-track": { bgcolor: "transparent" },
-  "&::-webkit-scrollbar-thumb": {
-    bgcolor: "rgba(255,255,255,0.1)",
-    borderRadius: 3,
-    "&:hover": { bgcolor: "rgba(255,255,255,0.2)" },
-  },
-  scrollbarWidth: "thin" as const,
-  scrollbarColor: "rgba(255,255,255,0.1) transparent",
-};
+// Theme-aware scrollbar styles matching ChatThread
+function getScrollbarSx(theme: Theme) {
+  const thumb = alpha(theme.palette.text.primary, 0.1);
+  const thumbHover = alpha(theme.palette.text.primary, 0.2);
+  return {
+    "&::-webkit-scrollbar": { width: 6 },
+    "&::-webkit-scrollbar-track": { bgcolor: "transparent" },
+    "&::-webkit-scrollbar-thumb": {
+      bgcolor: thumb,
+      borderRadius: 3,
+      "&:hover": { bgcolor: thumbHover },
+    },
+    scrollbarWidth: "thin" as const,
+    scrollbarColor: `${thumb} transparent`,
+  };
+}
 
 interface AuditSidebarProps {
   toolProgress: ToolProgressEvent[];
@@ -69,7 +74,7 @@ export function AuditSidebar({
         display: "flex",
         flexDirection: "column",
         gap: 2,
-        ...scrollbarSx,
+        ...getScrollbarSx(theme),
       }}
     >
       {/* Header */}
@@ -77,7 +82,7 @@ export function AuditSidebar({
         variant="overline"
         sx={{ color: "text.secondary", letterSpacing: 1.5, fontSize: "0.65rem" }}
       >
-        Audit Metrics
+        Live Audit Metrics
       </Typography>
 
       {/* Live stats — visible during and after audit */}
@@ -158,12 +163,6 @@ export function AuditPhase({ toolProgress, isLoading }: { toolProgress: ToolProg
         border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
       }}
     >
-      <Typography
-        variant="caption"
-        sx={{ fontWeight: 600, color: "text.secondary", mb: 1, display: "block" }}
-      >
-        Audit Progress
-      </Typography>
       <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
         {PHASES.map((phase, i) => {
           const isDone = i < currentPhaseIndex;
@@ -254,11 +253,6 @@ export function ActivityFeed({ toolProgress, isLoading }: { toolProgress: ToolPr
         borderRadius: 1.5,
         bgcolor: alpha(theme.palette.grey[500], 0.04),
         border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
-        flex: isLoading ? 1 : undefined,
-        minHeight: isLoading ? 200 : undefined,
-        maxHeight: isLoading ? undefined : 240,
-        display: "flex",
-        flexDirection: "column",
         overflow: "hidden",
       }}
     >
@@ -273,11 +267,8 @@ export function ActivityFeed({ toolProgress, isLoading }: { toolProgress: ToolPr
       <Box
         ref={feedRef}
         sx={{
-          flex: 1,
-          overflow: "auto",
           px: 1,
           pb: 1,
-          ...scrollbarSx,
         }}
       >
         <Stack spacing={0.5}>
@@ -306,7 +297,7 @@ export function ActivityFeed({ toolProgress, isLoading }: { toolProgress: ToolPr
                   sx={{
                     flex: 1,
                     fontWeight: 500,
-                    fontSize: "0.65rem",
+                    fontSize: "0.75rem",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
@@ -317,7 +308,7 @@ export function ActivityFeed({ toolProgress, isLoading }: { toolProgress: ToolPr
                 <Typography
                   variant="caption"
                   sx={{
-                    fontSize: "0.6rem",
+                    fontSize: "0.7rem",
                     color: "text.disabled",
                     fontFamily: '"Fira Code", monospace',
                     flexShrink: 0,
@@ -332,7 +323,7 @@ export function ActivityFeed({ toolProgress, isLoading }: { toolProgress: ToolPr
                   sx={{
                     display: "block",
                     mt: 0.25,
-                    fontSize: "0.58rem",
+                    fontSize: "0.65rem",
                     fontFamily: '"Fira Code", monospace',
                     color: "text.disabled",
                     overflow: "hidden",
@@ -612,6 +603,34 @@ function FindingsDonut({ report }: { report: AuditReport }) {
                 <Cell key={i} fill={entry.color} fillOpacity={0.8} />
               ))}
             </Pie>
+            <Tooltip
+              content={({ active, payload }) => {
+                if (!active || !payload || !payload[0]) return null;
+                const d = payload[0].payload;
+                const pct = total > 0 ? ((d.value / total) * 100).toFixed(0) : "0";
+                return (
+                  <Box
+                    sx={{
+                      bgcolor: theme.palette.background.paper,
+                      border: `1px solid ${alpha(theme.palette.divider, 0.3)}`,
+                      borderRadius: 1.5,
+                      px: 1.5,
+                      py: 1,
+                    }}
+                  >
+                    <Stack direction="row" alignItems="center" spacing={0.75}>
+                      <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: d.color, flexShrink: 0 }} />
+                      <Typography variant="caption" sx={{ fontWeight: 700, fontSize: "0.7rem" }}>
+                        {d.name}
+                      </Typography>
+                    </Stack>
+                    <Typography variant="caption" sx={{ display: "block", fontSize: "0.7rem", fontWeight: 600, mt: 0.5, color: d.color }}>
+                      {d.value} finding{d.value !== 1 ? "s" : ""} ({pct}%)
+                    </Typography>
+                  </Box>
+                );
+              }}
+            />
           </PieChart>
         </ResponsiveContainer>
         <Stack spacing={0.5} sx={{ ml: 1 }}>
@@ -697,6 +716,31 @@ function CategoryBreakdown({ report }: { report: AuditReport }) {
             width={75}
             axisLine={false}
             tickLine={false}
+          />
+          <Tooltip
+            content={({ active, payload }) => {
+              if (!active || !payload || !payload[0]) return null;
+              const d = payload[0].payload;
+              return (
+                <Box
+                  sx={{
+                    bgcolor: theme.palette.background.paper,
+                    border: `1px solid ${alpha(theme.palette.divider, 0.3)}`,
+                    borderRadius: 1.5,
+                    px: 1.5,
+                    py: 1,
+                  }}
+                >
+                  <Typography variant="caption" sx={{ fontWeight: 700, fontSize: "0.7rem", textTransform: "capitalize" }}>
+                    {d.category}
+                  </Typography>
+                  <Typography variant="caption" sx={{ display: "block", fontSize: "0.7rem", fontWeight: 600, mt: 0.5, color: theme.palette.primary.main }}>
+                    {d.count} finding{d.count !== 1 ? "s" : ""}
+                  </Typography>
+                </Box>
+              );
+            }}
+            cursor={{ fill: alpha(theme.palette.primary.main, 0.08) }}
           />
           <Bar
             dataKey="count"

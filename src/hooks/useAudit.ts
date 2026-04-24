@@ -20,6 +20,59 @@ interface AuditState {
   } | null;
 }
 
+const POLL_INTERVAL_MS = 2000;
+
+// Poll a job for events until done or aborted (retries on 5xx)
+const MAX_POLL_RETRIES = 3;
+const RETRY_BACKOFF_MS = [2000, 4000, 8000];
+
+export async function pollJob(
+  jobId: string,
+  onEvent: (event: StreamEvent) => void,
+  signal: AbortSignal
+): Promise<void> {
+  let cursor = 0;
+  let retries = 0;
+  while (!signal.aborted) {
+    const resp = await fetch(`/api/audit/progress/${jobId}?after=${cursor}`, {
+      credentials: "include",
+      signal,
+    });
+    if (!resp.ok) {
+      // Retry on 5xx (transient proxy/server errors)
+      if (resp.status >= 500 && retries < MAX_POLL_RETRIES) {
+        const delay = RETRY_BACKOFF_MS[retries] || 8000;
+        retries++;
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, delay);
+          signal.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(new DOMException("Aborted", "AbortError"));
+          }, { once: true });
+        });
+        continue;
+      }
+      throw new Error(`Poll error: ${resp.status}`);
+    }
+    retries = 0; // Reset on success
+    const data = await resp.json();
+    for (const event of data.events as StreamEvent[]) {
+      if (signal.aborted) return;
+      onEvent(event);
+    }
+    cursor = data.cursor;
+    if (data.done) return;
+    // Wait before next poll
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, POLL_INTERVAL_MS);
+      signal.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      }, { once: true });
+    });
+  }
+}
+
 export function useAudit() {
   const [state, setState] = useState<AuditState>({
     isAuditing: false,
@@ -33,59 +86,9 @@ export function useAudit() {
 
   const abortRef = useRef<AbortController | null>(null);
 
-  // Parse NDJSON stream from response
-  const parseNdjsonStream = useCallback(
-    async (
-      response: Response,
-      onEvent: (event: StreamEvent) => void
-    ) => {
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error("No readable stream");
-
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            try {
-              const event = JSON.parse(trimmed) as StreamEvent;
-              onEvent(event);
-            } catch {
-              // skip malformed lines
-            }
-          }
-        }
-
-        // Process remaining buffer
-        if (buffer.trim()) {
-          try {
-            const event = JSON.parse(buffer.trim()) as StreamEvent;
-            onEvent(event);
-          } catch {
-            // skip
-          }
-        }
-      } finally {
-        // Ensure the reader is released on abort or completion
-        reader.releaseLock();
-      }
-    },
-    []
-  );
-
   // Start a new audit
   const startAudit = useCallback(
-    async (database: string, connection: string, scope: string[] = [], schema: string = "") => {
+    async (database: string, scope: string[] = [], schema: string = "") => {
       // Abort any existing request
       if (abortRef.current) abortRef.current.abort();
       const controller = new AbortController();
@@ -105,8 +108,8 @@ export function useAudit() {
             id: `user-${Date.now()}`,
             role: "user",
             text: schema
-              ? `Audit ${database} database, schema ${schema}`
-              : `Audit ${database} database`,
+              ? `Audit ${database} database, schema ${schema}, scope ${scope.join("|")}`
+              : `Audit ${database} database, scope ${scope.join("|")}`,
             timestamp: new Date(),
           },
           {
@@ -125,24 +128,27 @@ export function useAudit() {
       });
 
       try {
-        const response = await fetch("/api/audit", {
+        // Start the audit — server returns jobId immediately
+        const startResp = await fetch("/api/audit", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ database, connection, scope, schema }),
+          body: JSON.stringify({ database, scope, schema }),
           signal: controller.signal,
+          credentials: "include",
         });
 
-        if (!response.ok) {
-          throw new Error(`Server error: ${response.status}`);
+        if (!startResp.ok) {
+          throw new Error(`Server error: ${startResp.status}`);
         }
 
-        await parseNdjsonStream(response, (event) => {
-          // Ignore events after abort (buffered data may still arrive)
+        const { jobId } = await startResp.json();
+
+        // Poll for events
+        await pollJob(jobId, (event) => {
           if (controller.signal.aborted) return;
 
           switch (event.type) {
             case "status":
-              // Don't display status messages in chat — audit progress accordion handles this
               break;
 
             case "tool_progress":
@@ -191,7 +197,6 @@ export function useAudit() {
               break;
 
             case "report":
-              // Don't set assistant text — the report accordion is the canonical display
               setState((prev) => ({
                 ...prev,
                 report: event.report,
@@ -238,10 +243,9 @@ export function useAudit() {
               }));
               break;
           }
-        });
+        }, controller.signal);
 
-        // Final state update if stream ended without a result event
-        // BUT skip this if we were aborted — cancelAudit already reset state
+        // Polling finished (job done) — ensure final state
         if (!controller.signal.aborted) {
           setState((prev) => ({
             ...prev,
@@ -252,9 +256,6 @@ export function useAudit() {
           }));
         }
       } catch (err) {
-        // If the controller was aborted (by cancelAudit), bail out regardless of error type.
-        // The abort can surface as AbortError, TypeError, or the stream may just end —
-        // cancelAudit already handled state cleanup.
         if (controller.signal.aborted) {
           return;
         }
@@ -267,7 +268,7 @@ export function useAudit() {
         }));
       }
     },
-    [parseNdjsonStream]
+    []
   );
 
   // Send a follow-up chat message
@@ -305,21 +306,25 @@ export function useAudit() {
       }));
 
       try {
-        const response = await fetch("/api/chat", {
+        const startResp = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ message: text.trim() }),
+          credentials: "include",
         });
 
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
+        if (!startResp.ok) {
+          const errorData = await startResp.json().catch(() => ({}));
           throw new Error(
             (errorData as Record<string, string>).error ||
-              `Server error: ${response.status}`
+              `Server error: ${startResp.status}`
           );
         }
 
-        await parseNdjsonStream(response, (event) => {
+        const { jobId } = await startResp.json();
+        const controller = new AbortController();
+
+        await pollJob(jobId, (event) => {
           switch (event.type) {
             case "text":
               assistantText += event.text;
@@ -390,7 +395,7 @@ export function useAudit() {
               }));
               break;
           }
-        });
+        }, controller.signal);
 
         setState((prev) => ({
           ...prev,
@@ -412,7 +417,7 @@ export function useAudit() {
         }));
       }
     },
-    [state.isLoading, parseNdjsonStream]
+    [state.isLoading]
   );
 
   const cancelAudit = useCallback(() => {

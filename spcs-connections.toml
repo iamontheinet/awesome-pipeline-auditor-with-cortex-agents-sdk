@@ -1,0 +1,7 @@
+[default]
+account = "sfsenorthamerica-gen_ai_hol"
+host = "sfsenorthamerica-gen-ai-hol.snowflakecomputing.com"
+authenticator = "oauth"
+token_file_path = "/snowflake/session/token"
+warehouse = "AUTOMATED_INTELLIGENCE_WH"
+database = "AUTOMATED_INTELLIGENCE"

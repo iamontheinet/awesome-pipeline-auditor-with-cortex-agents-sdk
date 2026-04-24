@@ -8,38 +8,39 @@ import {
   useTheme,
 } from "@mui/material";
 import {
-  Storage as StorageIcon,
+  AccountTree as PipelineIcon,
   Search as SearchIcon,
   HealthAndSafety as HealthIcon,
   Speed as FreshnessIcon,
+  AutoFixHigh as FixIcon,
+  Schedule as ScheduleIcon,
+  History as HistoryIcon,
 } from "@mui/icons-material";
 
-interface EmptyStateProps {
-  onStartAudit: (database: string) => void;
-}
-
-const STARTER_PROMPTS = [
+const FEATURES = [
   {
-    icon: <SearchIcon sx={{ fontSize: 18 }} />,
-    label: "Discover pipeline",
-    description: "Audit AUTOMATED_INTELLIGENCE database",
-    database: "AUTOMATED_INTELLIGENCE",
+    icon: <SearchIcon sx={{ fontSize: 20 }} />,
+    label: "Pipeline Discovery",
+    description: "Tables, dynamic tables, tasks, streams, pipes, and procedures",
   },
   {
-    icon: <FreshnessIcon sx={{ fontSize: 18 }} />,
-    label: "Check freshness",
-    description: "Find stale tables across schemas",
-    database: "AUTOMATED_INTELLIGENCE",
+    icon: <FreshnessIcon sx={{ fontSize: 20 }} />,
+    label: "Freshness Analysis",
+    description: "Detect stale data and monitor table update frequency",
   },
   {
-    icon: <HealthIcon sx={{ fontSize: 18 }} />,
-    label: "DT health check",
-    description: "Dynamic table refresh status",
-    database: "AUTOMATED_INTELLIGENCE",
+    icon: <HealthIcon sx={{ fontSize: 20 }} />,
+    label: "Health Monitoring",
+    description: "Dynamic table refresh failures, task errors, and scheduling issues",
+  },
+  {
+    icon: <FixIcon sx={{ fontSize: 20 }} />,
+    label: "AI-Powered Fixes",
+    description: "Get remediation suggestions for identified issues",
   },
 ];
 
-export function EmptyState({ onStartAudit }: EmptyStateProps) {
+export function EmptyState() {
   const theme = useTheme();
 
   return (
@@ -66,7 +67,7 @@ export function EmptyState({ onStartAudit }: EmptyStateProps) {
           mb: 3,
         }}
       >
-        <StorageIcon sx={{ fontSize: 32, color: "primary.main" }} />
+        <PipelineIcon sx={{ fontSize: 32, color: "primary.main" }} />
       </Box>
 
       <Typography
@@ -85,51 +86,137 @@ export function EmptyState({ onStartAudit }: EmptyStateProps) {
       <Typography
         variant="body2"
         color="text.secondary"
-        sx={{ mb: 4, maxWidth: 400, textAlign: "center" }}
+        sx={{ mb: 3, maxWidth: 420, textAlign: "center" }}
       >
-              Comprehensive audit of your Snowflake data pipelines. Discovers tables,
-              dynamic tables, tasks, streams, pipes, and procedures. Checks freshness,
-              validates health, and identifies issues. Customize scope above.
+        Comprehensive audit of your Snowflake data pipelines powered by the
+        Cortex Code Agent SDK.
       </Typography>
 
-      <Stack spacing={1.5} sx={{ width: "100%", maxWidth: 380 }}>
-        {STARTER_PROMPTS.map((prompt) => (
-          <Paper
-            key={prompt.label}
-            elevation={0}
-            onClick={() => onStartAudit(prompt.database)}
-            sx={{
-              p: 2,
-              borderRadius: 2,
-              cursor: "pointer",
-              border: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
-              transition: "all 0.2s",
-              "&:hover": {
-                bgcolor: alpha(theme.palette.primary.main, 0.04),
-                borderColor: alpha(theme.palette.primary.main, 0.3),
-                transform: "translateY(-1px)",
-                boxShadow: `0 4px 12px ${alpha(theme.palette.primary.main, 0.1)}`,
-              },
-            }}
-          >
-            <Stack direction="row" alignItems="center" spacing={1.5}>
-              <Box sx={{ color: "primary.main" }}>{prompt.icon}</Box>
-              <Box>
-                <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                  {prompt.label}
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {prompt.description}
-                </Typography>
-              </Box>
-            </Stack>
-          </Paper>
+      {/* How to start — horizontal steps with pipe delimiter */}
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={1.5}
+        sx={{ mb: 3 }}
+      >
+        {["Select a database and schema", "Choose audit scopes", "Click Run Audit"].map((step, i) => (
+          <Stack key={i} direction="row" alignItems="center" spacing={1.5}>
+            {i > 0 && (
+              <Typography sx={{ color: alpha(theme.palette.text.secondary, 0.4), fontWeight: 300, fontSize: "1.2rem" }}>
+                |
+              </Typography>
+            )}
+            <Chip
+              label={`${i + 1}`}
+              size="small"
+              sx={{
+                width: 22,
+                height: 22,
+                fontSize: "0.7rem",
+                fontWeight: 700,
+                bgcolor: alpha(theme.palette.primary.main, 0.15),
+                color: "primary.main",
+                "& .MuiChip-label": { px: 0 },
+              }}
+            />
+            <Typography variant="body2" sx={{ fontWeight: 500, fontSize: "0.85rem" }}>
+              {step}
+            </Typography>
+          </Stack>
         ))}
       </Stack>
 
-      <Stack direction="row" spacing={1} sx={{ mt: 4 }}>
+      {/* Feature highlights — non-clickable */}
+      <Box
+        sx={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 1.5,
+          width: "100%",
+          maxWidth: 520,
+          mb: 3,
+        }}
+      >
+        {FEATURES.map((feature) => (
+          <Paper
+            key={feature.label}
+            elevation={0}
+            sx={{
+              p: 1.5,
+              borderRadius: 2,
+              bgcolor: alpha(theme.palette.primary.main, 0.04),
+              border: `1px solid ${alpha(theme.palette.primary.main, 0.15)}`,
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 1,
+            }}
+          >
+            <Box sx={{ color: "primary.main", mt: 0.25, flexShrink: 0 }}>{feature.icon}</Box>
+            <Box>
+              <Typography variant="caption" sx={{ fontWeight: 600, fontSize: "0.75rem", display: "block" }}>
+                {feature.label}
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem", lineHeight: 1.4 }}>
+                {feature.description}
+              </Typography>
+            </Box>
+          </Paper>
+        ))}
+      </Box>
+
+      {/* Scheduling + audit history blurbs */}
+      <Stack direction="row" spacing={2} sx={{ mb: 3, maxWidth: 520, width: "100%" }}>
+        <Paper
+          elevation={0}
+          sx={{
+            flex: 1,
+            p: 1.5,
+            borderRadius: 2,
+            bgcolor: alpha(theme.palette.secondary.main, 0.04),
+            border: `1px solid ${alpha(theme.palette.secondary.main, 0.15)}`,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 1,
+          }}
+        >
+          <ScheduleIcon sx={{ fontSize: 18, color: "secondary.main", mt: 0.25 }} />
+          <Box>
+            <Typography variant="caption" sx={{ fontWeight: 600, fontSize: "0.75rem", display: "block" }}>
+              Schedule Audits
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem", lineHeight: 1.4 }}>
+              Set up recurring audits with email reports using the calendar icon in the header.
+            </Typography>
+          </Box>
+        </Paper>
+        <Paper
+          elevation={0}
+          sx={{
+            flex: 1,
+            p: 1.5,
+            borderRadius: 2,
+            bgcolor: alpha(theme.palette.info.main, 0.04),
+            border: `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 1,
+          }}
+        >
+          <HistoryIcon sx={{ fontSize: 18, color: "info.main", mt: 0.25 }} />
+          <Box>
+            <Typography variant="caption" sx={{ fontWeight: 600, fontSize: "0.75rem", display: "block" }}>
+              Audit History
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem", lineHeight: 1.4 }}>
+              View past audit results and trends in the schedule panel.
+            </Typography>
+          </Box>
+        </Paper>
+      </Stack>
+
+      <Stack direction="row" spacing={1}>
         <Chip
-          label="Read-only mode"
+          label="Read-only audit"
           size="small"
           variant="outlined"
           sx={{ fontSize: "0.65rem" }}

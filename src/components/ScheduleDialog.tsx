@@ -3,11 +3,13 @@ import {
   Box,
   Button,
   Chip,
+  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   Divider,
+  FormControlLabel,
   IconButton,
   Stack,
   Switch,
@@ -21,28 +23,46 @@ import {
   CalendarMonth,
   Delete,
   Schedule as ScheduleIcon,
+  Storage as DatabaseIcon,
 } from "@mui/icons-material";
 import type { AuditSchedule } from "../hooks/useScheduler";
 import { SCHEDULE_PRESETS } from "../hooks/useScheduler";
+
+const SCOPE_LABELS: Record<string, string> = {
+  tables_freshness: "Tables & Freshness",
+  dynamic_tables: "Dynamic Tables",
+  tasks: "Tasks",
+  views: "Views",
+  streams: "Streams",
+  pipes: "Pipes",
+  procedures: "Stored Procedures",
+};
 
 interface ScheduleDialogProps {
   open: boolean;
   onClose: () => void;
   database: string;
-  connection: string;
   scope: string[];
   schema: string;
   schedules: AuditSchedule[];
-  onAdd: (schedule: Omit<AuditSchedule, "id" | "nextRun" | "createdAt">) => void;
-  onRemove: (id: string) => void;
-  onToggle: (id: string) => void;
+  onAdd: (schedule: {
+    database: string;
+    scope: string[];
+    schema: string;
+    cronLabel: string;
+    intervalMinutes: number;
+    enabled: boolean;
+    sendEmail: boolean;
+  }) => void | Promise<void>;
+  onRemove: (id: string) => void | Promise<void>;
+  onToggle: (id: string) => void | Promise<void>;
 }
 
 /** Format a future date as a simple relative string like "in 5 hours". */
 function formatRelativeTime(date: Date): string {
   const now = Date.now();
   const diffMs = date.getTime() - now;
-  if (diffMs <= 0) return "now";
+  if (diffMs <= 0) return "pending";
 
   const minutes = Math.round(diffMs / 60_000);
   if (minutes < 1) return "in <1 min";
@@ -55,9 +75,9 @@ function formatRelativeTime(date: Date): string {
   return `in ${days} day${days === 1 ? "" : "s"}`;
 }
 
-/** Find a preset label by its intervalMs value. */
-function presetLabel(intervalMs: number): string {
-  const match = SCHEDULE_PRESETS.find((p) => p.intervalMs === intervalMs);
+/** Find a preset label by its intervalMinutes value. */
+function presetLabel(intervalMinutes: number): string {
+  const match = SCHEDULE_PRESETS.find((p) => p.intervalMinutes === intervalMinutes);
   return match?.label ?? "Custom";
 }
 
@@ -65,7 +85,6 @@ export function ScheduleDialog({
   open,
   onClose,
   database,
-  connection,
   scope,
   schema,
   schedules,
@@ -75,28 +94,66 @@ export function ScheduleDialog({
 }: ScheduleDialogProps) {
   const theme = useTheme();
   const [selectedPreset, setSelectedPreset] = useState<number | null>(
-    SCHEDULE_PRESETS[0]?.intervalMs ?? null,
+    SCHEDULE_PRESETS[0]?.intervalMinutes ?? null,
   );
+  const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set());
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+  const [adding, setAdding] = useState(false);
+  const [scheduleSendEmail, setScheduleSendEmail] = useState(true);
 
-  const handleAdd = () => {
+  // True when any async action is in-flight — disables all interactive controls
+  const busy = adding || togglingIds.size > 0 || deletingIds.size > 0;
+
+  const handleToggle = async (id: string) => {
+    setTogglingIds((prev) => new Set(prev).add(id));
+    try {
+      await onToggle(id);
+    } finally {
+      setTogglingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    setDeletingIds((prev) => new Set(prev).add(id));
+    try {
+      await onRemove(id);
+    } finally {
+      setDeletingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  const handleAdd = async () => {
     if (selectedPreset == null) return;
-    const preset = SCHEDULE_PRESETS.find((p) => p.intervalMs === selectedPreset);
-    onAdd({
-      database,
-      connection,
-      scope,
-      schema,
-      cronLabel: preset?.label ?? "Custom",
-      intervalMs: selectedPreset,
-      enabled: true,
-    });
+    setAdding(true);
+    try {
+      const preset = SCHEDULE_PRESETS.find((p) => p.intervalMinutes === selectedPreset);
+      await onAdd({
+        database,
+        scope,
+        schema,
+        cronLabel: preset?.label ?? "Custom",
+        intervalMinutes: selectedPreset,
+        enabled: true,
+        sendEmail: scheduleSendEmail,
+      });
+    } finally {
+      setAdding(false);
+    }
   };
 
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      maxWidth="sm"
+      maxWidth="md"
       fullWidth
       PaperProps={{
         sx: {
@@ -124,98 +181,80 @@ export function ScheduleDialog({
       <DialogContent dividers sx={{ p: 0 }}>
         {/* ---- New Schedule section ---- */}
         <Box sx={{ px: 3, py: 2 }}>
-          <Typography
-            variant="overline"
+          {/* Banner-style DB / Schema / Scopes — matches main audit page */}
+           <Box
             sx={{
-              color: "text.secondary",
-              letterSpacing: 1.5,
-              fontSize: "0.65rem",
-              mb: 1,
-              display: "block",
+              px: 2,
+              py: 1,
+              borderRadius: 2,
+              bgcolor: alpha(theme.palette.primary.main, 0.04),
+              border: `1px solid ${alpha(theme.palette.primary.main, 0.12)}`,
+              display: "flex",
+              alignItems: "center",
+              gap: 1,
+              overflow: "hidden",
+              mb: 2,
             }}
           >
-            New Schedule
-          </Typography>
-
-          {/* Current config chips — row 1: database, connection, schema */}
-          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+            <DatabaseIcon sx={{ fontSize: 18, color: "primary.main", flexShrink: 0 }} />
+            <Typography variant="caption" sx={{ fontWeight: 600, color: "text.secondary", fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: 0.5, flexShrink: 0 }}>
+              Auditing
+            </Typography>
             <Chip
               label={database || "No database"}
               size="small"
               sx={{
-                fontSize: "0.7rem",
-                height: 24,
-                borderRadius: 1,
-                bgcolor: alpha(theme.palette.primary.main, 0.1),
-                color: theme.palette.primary.main,
-                fontWeight: 600,
-              }}
-            />
-            <Chip
-              label={connection || "No connection"}
-              size="small"
-              sx={{
-                fontSize: "0.7rem",
-                height: 24,
-                borderRadius: 1,
-                bgcolor: alpha(theme.palette.secondary.main, 0.1),
-                color: theme.palette.secondary.main,
+                fontSize: "0.65rem",
+                height: 20,
                 fontWeight: 500,
+                bgcolor: alpha(theme.palette.info.main, 0.08),
+                color: "text.secondary",
+                border: `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
+                flexShrink: 0,
               }}
             />
             {schema && (
-              <Chip
-                label={schema}
-                size="small"
-                variant="outlined"
-                sx={{
-                  fontSize: "0.7rem",
-                  height: 24,
-                  borderRadius: 1,
-                  borderColor: alpha(theme.palette.divider, 0.5),
-                  color: "text.secondary",
-                }}
-              />
-            )}
-          </Stack>
-
-          {/* Row 2: scope chips */}
-          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
-            <Typography variant="caption" color="text.secondary" sx={{ mr: 0.5, fontSize: "0.7rem", whiteSpace: "nowrap", lineHeight: "24px" }}>
-              Scope:
-            </Typography>
-            {scope.length === 0 ? (
-              <Chip
-                label="No scopes"
-                size="small"
-                variant="outlined"
-                sx={{
-                  fontSize: "0.7rem",
-                  height: 24,
-                  borderRadius: 1,
-                  borderColor: alpha(theme.palette.error.main, 0.4),
-                  color: "text.disabled",
-                }}
-              />
-            ) : (
-              scope.map((s) => (
+              <>
+                <Typography sx={{ color: alpha(theme.palette.text.secondary, 0.4), fontSize: "0.9rem", flexShrink: 0 }}>
+                  /
+                </Typography>
                 <Chip
-                  key={s}
-                  label={s.replace(/_/g, " ")}
+                  label={schema}
                   size="small"
-                  variant="outlined"
                   sx={{
                     fontSize: "0.65rem",
-                    height: 24,
-                    borderRadius: 1,
-                    borderColor: alpha(theme.palette.divider, 0.5),
+                    height: 20,
+                    fontWeight: 500,
+                    bgcolor: alpha(theme.palette.info.main, 0.08),
                     color: "text.secondary",
-                    textTransform: "capitalize",
+                    border: `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
+                    flexShrink: 0,
                   }}
                 />
-              ))
+              </>
             )}
-          </Stack>
+            {scope.length > 0 && (
+              <Typography sx={{ color: alpha(theme.palette.text.secondary, 0.4), fontSize: "0.9rem", flexShrink: 0 }}>
+                /
+              </Typography>
+            )}
+            {scope.map((s) => (
+              <Chip
+                key={s}
+                label={SCOPE_LABELS[s] || s.replace(/_/g, " ")}
+                size="small"
+                sx={{
+                  fontSize: "0.65rem",
+                  height: 20,
+                  fontWeight: 500,
+                  bgcolor: alpha(theme.palette.info.main, 0.08),
+                  color: "text.secondary",
+                  border: `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
+                  flexShrink: 0,
+                }}
+              />
+            ))}
+          </Box>
 
           {/* Interval presets */}
           <Typography
@@ -231,12 +270,13 @@ export function ScheduleDialog({
               if (val !== null) setSelectedPreset(val);
             }}
             size="small"
-            sx={{ mb: 2, flexWrap: "wrap", gap: 0.5 }}
+            disabled={busy}
+            sx={{ mb: 3, flexWrap: "wrap", gap: 0.5 }}
           >
             {SCHEDULE_PRESETS.map((preset) => (
               <ToggleButton
-                key={preset.intervalMs}
-                value={preset.intervalMs}
+                key={preset.intervalMinutes}
+                value={preset.intervalMinutes}
                 sx={{
                   textTransform: "none",
                   fontSize: "0.75rem",
@@ -257,20 +297,29 @@ export function ScheduleDialog({
             ))}
           </ToggleButtonGroup>
 
-          <Button
-            variant="contained"
-            startIcon={<ScheduleIcon />}
-            disabled={!database || !connection || scope.length === 0 || selectedPreset == null}
-            onClick={handleAdd}
-            sx={{
-              borderRadius: 1.5,
-              textTransform: "none",
-              fontWeight: 600,
-              px: 3,
-            }}
+          <Typography
+            variant="caption"
+            sx={{ display: "block", color: "text.disabled", fontSize: "0.65rem" }}
           >
-            Schedule
-          </Button>
+            * All times are in the account timezone (America/Los_Angeles)
+          </Typography>
+
+          <FormControlLabel
+            control={
+              <Switch
+                size="small"
+                checked={scheduleSendEmail}
+                onChange={() => setScheduleSendEmail((v) => !v)}
+                disabled={busy}
+              />
+            }
+            label={
+              <Typography variant="caption" sx={{ color: "text.secondary", fontSize: "0.75rem" }}>
+                Email report on completion
+              </Typography>
+            }
+            sx={{ mt: 1.5 }}
+          />
         </Box>
 
         <Divider />
@@ -306,12 +355,12 @@ export function ScheduleDialog({
                 "&::-webkit-scrollbar": { width: 6 },
                 "&::-webkit-scrollbar-track": { bgcolor: "transparent" },
                 "&::-webkit-scrollbar-thumb": {
-                  bgcolor: "rgba(255,255,255,0.1)",
+                  bgcolor: alpha(theme.palette.text.primary, 0.1),
                   borderRadius: 3,
-                  "&:hover": { bgcolor: "rgba(255,255,255,0.2)" },
+                  "&:hover": { bgcolor: alpha(theme.palette.text.primary, 0.2) },
                 },
                 scrollbarWidth: "thin" as const,
-                scrollbarColor: "rgba(255,255,255,0.1) transparent",
+                scrollbarColor: `${alpha(theme.palette.text.primary, 0.1)} transparent`,
               }}
             >
               {schedules.map((s) => (
@@ -346,17 +395,11 @@ export function ScheduleDialog({
                       {s.database}
                       {s.schema ? ` / ${s.schema}` : ""}
                     </Typography>
-                    <Typography
-                      variant="caption"
-                      sx={{ color: "text.disabled", fontSize: "0.65rem" }}
-                    >
-                      {s.connection}
-                    </Typography>
                   </Box>
 
                   {/* Interval label */}
                   <Chip
-                    label={presetLabel(s.intervalMs)}
+                    label={presetLabel(s.intervalMinutes)}
                     size="small"
                     sx={{
                       fontSize: "0.65rem",
@@ -385,25 +428,35 @@ export function ScheduleDialog({
                   </Typography>
 
                   {/* Toggle */}
-                  <Switch
-                    size="small"
-                    checked={s.enabled}
-                    onChange={() => onToggle(s.id)}
-                    sx={{ flexShrink: 0 }}
-                  />
+                  {togglingIds.has(s.id) ? (
+                    <CircularProgress size={20} sx={{ flexShrink: 0, mx: 1 }} />
+                  ) : (
+                    <Switch
+                      size="small"
+                      checked={s.enabled}
+                      onChange={() => handleToggle(s.id)}
+                      disabled={busy}
+                      sx={{ flexShrink: 0 }}
+                    />
+                  )}
 
                   {/* Delete */}
-                  <IconButton
-                    size="small"
-                    onClick={() => onRemove(s.id)}
-                    sx={{
-                      color: "text.disabled",
-                      flexShrink: 0,
-                      "&:hover": { color: theme.palette.error.main },
-                    }}
-                  >
-                    <Delete fontSize="small" />
-                  </IconButton>
+                  {deletingIds.has(s.id) ? (
+                    <CircularProgress size={18} sx={{ flexShrink: 0, mx: 0.5 }} />
+                  ) : (
+                    <IconButton
+                      size="small"
+                      onClick={() => handleDelete(s.id)}
+                      disabled={busy}
+                      sx={{
+                        color: "text.disabled",
+                        flexShrink: 0,
+                        "&:hover": { color: theme.palette.error.main },
+                      }}
+                    >
+                      <Delete fontSize="small" />
+                    </IconButton>
+                  )}
                 </Box>
               ))}
             </Stack>
@@ -413,6 +466,28 @@ export function ScheduleDialog({
 
       {/* ---- Footer ---- */}
       <DialogActions sx={{ px: 3, py: 1.5 }}>
+        <Button
+          variant={theme.palette.mode === "light" ? "outlined" : "contained"}
+          startIcon={adding ? <CircularProgress size={18} color="inherit" /> : <ScheduleIcon />}
+          disabled={!database || scope.length === 0 || selectedPreset == null || busy}
+          onClick={handleAdd}
+          sx={{
+            borderRadius: 1.5,
+            textTransform: "none",
+            fontWeight: 600,
+            px: 3,
+            ...(theme.palette.mode === "light" && {
+              borderColor: theme.palette.primary.main,
+              borderWidth: 1.5,
+              "&:hover": {
+                bgcolor: alpha(theme.palette.primary.main, 0.08),
+                borderColor: theme.palette.primary.dark,
+              },
+            }),
+          }}
+        >
+          {adding ? "Scheduling..." : "Schedule"}
+        </Button>
         <Button
           onClick={onClose}
           sx={{ borderRadius: 1.5, textTransform: "none" }}

@@ -7,6 +7,8 @@
 
 import express from "express";
 import { execSync } from "child_process";
+import path from "path";
+import { fileURLToPath } from "url";
 import {
   createSession,
   type Session,
@@ -20,6 +22,19 @@ import {
 
 const app = express();
 app.use(express.json());
+
+// Request logger for debugging SPCS ingress issues
+app.use((req, _res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
+// In production, serve the Vite build output
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const distDir = path.resolve(__dirname, "..", "dist");
+if (process.env.NODE_ENV === "production") {
+  app.use(express.static(distDir));
+}
 
 const PORT = process.env.PORT || 3001;
 
@@ -196,12 +211,24 @@ const AUDIT_REPORT_SCHEMA = {
 // ---------------------------------------------------------------------------
 // System prompt — composable sections keyed by audit scope
 // ---------------------------------------------------------------------------
-const PROMPT_PREAMBLE = `You are a Snowflake Data Pipeline Auditor. Your job is to comprehensively audit
+const PROMPT_PREAMBLE_ALL_SCHEMAS = `You are a Snowflake Data Pipeline Auditor. Your job is to comprehensively audit
 a database's data pipeline by examining its objects, freshness, health, and quality.
 
 WORKFLOW:
 1. DISCOVER: Run the discovery queries below to build a complete pipeline inventory.
    - Schemas: SHOW SCHEMAS IN DATABASE <DATABASE>;`;
+
+const PROMPT_PREAMBLE_SINGLE_SCHEMA = `You are a Snowflake Data Pipeline Auditor. Your job is to comprehensively audit
+a specific schema's data pipeline by examining its objects, freshness, health, and quality.
+
+CRITICAL CONSTRAINT: You are auditing ONLY the <SCHEMA> schema in the <DATABASE> database.
+- NEVER run SHOW SCHEMAS. The schema is already known: <SCHEMA>.
+- NEVER audit objects outside <DATABASE>.<SCHEMA>.
+- All SHOW commands must use IN SCHEMA <DATABASE>.<SCHEMA> (not IN DATABASE).
+- All INFORMATION_SCHEMA queries must filter with WHERE table_schema = '<SCHEMA>'.
+
+WORKFLOW:
+1. DISCOVER: Run the discovery queries below scoped to <DATABASE>.<SCHEMA>. Skip schema discovery — go directly to object discovery.`;
 
 const PROMPT_SECTIONS: Record<string, string> = {
   tables_freshness: `
@@ -231,8 +258,8 @@ DYNAMIC TABLES:
    - Check refresh history for failures:
      SELECT name, state, state_message, refresh_start_time, refresh_end_time,
             DATEDIFF('second', refresh_start_time, refresh_end_time) AS duration_sec
-     FROM TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(NAME_PREFIX => '<DATABASE>.'))
-     ORDER BY refresh_start_time DESC LIMIT 20;`,
+      FROM TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(NAME_PREFIX => '<DT_NAME_PREFIX>'))
+      ORDER BY refresh_start_time DESC LIMIT 20;`,
 
   tasks: `
 TASKS:
@@ -295,7 +322,7 @@ function buildSystemPrompt(database: string, scope: string[], schema: string): s
   // If no scope provided, use all sections (backwards compat)
   const activeScopes = scope.length > 0 ? scope : allScopes;
 
-  let prompt = PROMPT_PREAMBLE;
+  let prompt = schema ? PROMPT_PREAMBLE_SINGLE_SCHEMA : PROMPT_PREAMBLE_ALL_SCHEMAS;
   for (const key of allScopes) {
     if (activeScopes.includes(key)) {
       prompt += PROMPT_SECTIONS[key];
@@ -303,12 +330,32 @@ function buildSystemPrompt(database: string, scope: string[], schema: string): s
   }
   prompt += PROMPT_FOOTER;
 
-  // Add schema filter instruction if a specific schema was selected
+  // Replace placeholders
+  prompt = prompt.replace(/<DATABASE>/g, database);
+  // DT name prefix: schema-scoped if schema selected, otherwise database-wide
+  const dtPrefix = schema ? `${database}.${schema}.` : `${database}.`;
+  prompt = prompt.replace(/<DT_NAME_PREFIX>/g, dtPrefix);
+
+  // When a specific schema is selected, rewrite SHOW/query targets to scope to that schema
   if (schema) {
-    prompt += `\n\nIMPORTANT: Only audit objects in the ${schema} schema. Filter all SHOW and SELECT queries to this schema only. For INFORMATION_SCHEMA queries, add WHERE table_schema = '${schema}'.`;
+    prompt = prompt
+      .replace(/<SCHEMA>/g, schema)
+      // SHOW X IN DATABASE DB → SHOW X IN SCHEMA DB.SCHEMA
+      .replace(new RegExp(`SHOW (\\w+(?:\\s+\\w+)?) IN DATABASE ${database}`, "g"),
+        `SHOW $1 IN SCHEMA ${database}.${schema}`)
+      // INFORMATION_SCHEMA queries: tighten WHERE clause
+      .replace(
+        /WHERE table_schema NOT IN \('INFORMATION_SCHEMA'\)/g,
+        `WHERE table_schema = '${schema}'`
+      )
+      // Replace generic "Check every schema" with schema-specific instruction
+      .replace(
+        /Be thorough\. Check every schema, every object type in scope\./,
+        `Be thorough. Check every object type in scope within the ${schema} schema.`
+      );
   }
 
-  return prompt.replace(/<DATABASE>/g, database);
+  return prompt;
 }
 
 // ---------------------------------------------------------------------------
@@ -344,46 +391,46 @@ async function readOnlyGuard(
 // Session management (one active session at a time)
 // ---------------------------------------------------------------------------
 let activeSession: Session | null = null;
+let fixJobActive = false; // Only one suggest-fix job at a time
+let fixSession: Session | null = null; // Kept alive for follow-up chat
 
-function ndjsonLine(data: Record<string, unknown>): string {
-  return JSON.stringify(data) + "\n";
+// ---------------------------------------------------------------------------
+// Poll-based job store — replaces NDJSON streaming to work around SPCS
+// ingress proxy ~90s HTTP connection timeout
+// ---------------------------------------------------------------------------
+interface AuditJob {
+  events: Record<string, unknown>[];
+  done: boolean;
+  error?: string;
 }
 
-// ---------------------------------------------------------------------------
-// GET /api/connections — list available Snowflake connections
-// ---------------------------------------------------------------------------
-app.get("/api/connections", (_req, res) => {
-  try {
-    const raw = execSync("cortex connections list", {
-      encoding: "utf-8",
-      timeout: 10_000,
-      env: { ...process.env, PATH: process.env.PATH },
-    });
-    const parsed = JSON.parse(raw);
-    res.json({
-      active: parsed.active_connection || "",
-      connections: Object.keys(parsed.connections || {}),
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to list connections", detail: String(err) });
+const jobStore = new Map<string, AuditJob>();
+
+function pushJobEvent(jobId: string, event: Record<string, unknown>) {
+  const job = jobStore.get(jobId);
+  if (job) job.events.push(event);
+}
+
+// Clean up old jobs after 30 minutes
+setInterval(() => {
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  for (const [id, job] of jobStore) {
+    if (job.done && job.events.length > 0) {
+      // Check first event timestamp (we embed _ts in status events)
+      const first = job.events[0] as Record<string, unknown>;
+      if (first._ts && (first._ts as number) < cutoff) {
+        jobStore.delete(id);
+      }
+    }
   }
-});
+}, 5 * 60 * 1000);
 
 // ---------------------------------------------------------------------------
-// GET /api/databases?connection=<name> — list databases for a connection
+// GET /api/databases — list databases visible to the service role
 // ---------------------------------------------------------------------------
-app.get("/api/databases", (req, res) => {
-  const connection = String(req.query.connection || "");
-  if (!connection || !/^[\w-]+$/.test(connection)) {
-    res.status(400).json({ error: "Invalid connection name" });
-    return;
-  }
+app.get("/api/databases", (_req, res) => {
   try {
-    const raw = execSync(
-      `snow sql -q "SHOW DATABASES" -c ${connection} --format json`,
-      { encoding: "utf-8", timeout: 15_000, env: { ...process.env, PATH: process.env.PATH } }
-    );
-    const rows = JSON.parse(raw) as Array<{ name: string }>;
+    const rows = snowSql("SHOW DATABASES") as Array<{ name: string }>;
     const databases = rows.map((r) => r.name).filter(Boolean).sort();
     res.json({ databases });
   } catch (err) {
@@ -392,41 +439,36 @@ app.get("/api/databases", (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/schemas?connection=<name>&database=<name> — list schemas
+// GET /api/schemas?database=<name> — list schemas in a database
 // ---------------------------------------------------------------------------
 app.get("/api/schemas", (req, res) => {
-  const connection = String(req.query.connection || "");
   const database = String(req.query.database || "");
-  if (!connection || !/^[\w-]+$/.test(connection)) {
-    res.status(400).json({ error: "Invalid connection name" });
-    return;
-  }
   if (!database || !/^[\w-]+$/.test(database)) {
     res.status(400).json({ error: "Invalid database name" });
     return;
   }
   try {
-    const raw = execSync(
-      `snow sql -q "SHOW SCHEMAS IN DATABASE ${database}" -c ${connection} --format json`,
-      { encoding: "utf-8", timeout: 15_000, env: { ...process.env, PATH: process.env.PATH } }
-    );
-    const rows = JSON.parse(raw) as Array<{ name: string }>;
+    console.log(`[Schemas] Fetching schemas for ${database}`);
+    const rows = snowSql(`SHOW SCHEMAS IN DATABASE ${database}`) as Array<{ name: string }>;
     const schemas = rows
       .map((r) => r.name)
       .filter((s) => s !== "INFORMATION_SCHEMA")
       .sort();
+    console.log(`[Schemas] Found ${schemas.length} schemas: ${schemas.join(", ")}`);
     res.json({ schemas });
   } catch (err) {
+    console.error(`[Schemas] Failed for ${database}:`, err);
     res.status(500).json({ error: "Failed to list schemas", detail: String(err) });
   }
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/audit — start a new audit
+// POST /api/audit — start a new audit (poll-based: returns jobId immediately)
 // ---------------------------------------------------------------------------
 app.post("/api/audit", async (req, res) => {
-  const { database = "AUTOMATED_INTELLIGENCE", connection = "dash-builder-si", scope = [], schema = "" } =
+  const { database = "AUTOMATED_INTELLIGENCE", scope = [], schema = "" } =
     req.body || {};
+  const connection = DEFAULT_CONNECTION;
 
   // Clean up previous session (with timeout to avoid hanging)
   if (activeSession) {
@@ -442,38 +484,47 @@ app.post("/api/audit", async (req, res) => {
     }
   }
 
-  // Track client disconnection + stream iterator for cancellation
-  let clientDisconnected = false;
-  let streamIterator: AsyncIterableIterator<unknown> | null = null;
-  req.on("close", () => {
-    clientDisconnected = true;
-    // Break the for-await loop immediately by returning the iterator
-    if (streamIterator) {
-      streamIterator.return?.(undefined).catch(() => {});
-      streamIterator = null;
-    }
-    // Close the SDK session
-    if (activeSession) {
-      const sess = activeSession;
-      activeSession = null;
-      sess.close().catch(() => {});
-    }
+  // Create job entry
+  const jobId = `audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  jobStore.set(jobId, { events: [], done: false });
+
+  pushJobEvent(jobId, {
+    type: "status",
+    message: "Starting audit session...",
+    database,
+    connection,
+    _ts: Date.now(),
   });
 
-  res.setHeader("Content-Type", "application/x-ndjson");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
+  // Return jobId immediately — frontend will poll GET /api/audit/progress/:jobId
+  res.json({ jobId });
+
+  // Run the audit in the background (fire-and-forget)
+  runAuditJob(jobId, database, scope as string[], schema, connection).catch((err) => {
+    console.error("Audit job error:", err);
+  });
+});
+
+// Background audit runner — pushes events into the job store
+async function runAuditJob(
+  jobId: string,
+  database: string,
+  scope: string[],
+  schema: string,
+  connection: string,
+  sendEmail = false
+) {
+  const job = jobStore.get(jobId);
+  if (!job) return;
 
   const toolCounter = { count: 0, start: Date.now() };
 
-  // PostToolUse hook — streams progress to the client
+  // PostToolUse hook — pushes progress to the job buffer
   const progressHook = async (
     input: HookInput,
     _toolUseId: string | null,
     _context: unknown
   ): Promise<HookOutput> => {
-    if (clientDisconnected) return {};
     toolCounter.count++;
     const elapsed = ((Date.now() - toolCounter.start) / 1000).toFixed(1);
     const toolName = input.tool_name || "unknown";
@@ -493,11 +544,7 @@ app.post("/api/audit", async (req, res) => {
       event.description = sqlInput?.description || "";
     }
 
-    try {
-      res.write(ndjsonLine(event));
-    } catch {
-      /* client disconnected */
-    }
+    pushJobEvent(jobId, event);
     return {};
   };
 
@@ -524,20 +571,18 @@ app.post("/api/audit", async (req, res) => {
   };
 
   try {
-    res.write(
-      ndjsonLine({
-        type: "status",
-        message: "Starting audit session...",
-        database,
-        connection,
-      })
-    );
+    console.log("Creating cortex session with connection:", connection);
+    activeSession = await Promise.race([
+      createSession(options),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("createSession timed out after 60s")), 60_000)
+      ),
+    ]);
+    console.log("Session created successfully");
 
-    activeSession = await createSession(options);
+    pushJobEvent(jobId, { type: "status", message: "Session connected. Running audit..." });
 
-    res.write(ndjsonLine({ type: "status", message: "Session connected. Running audit..." }));
-
-    // Send the audit prompt
+    // Build and send audit prompt
     const scopeLabels: Record<string, string> = {
       tables_freshness: "tables & freshness",
       dynamic_tables: "dynamic tables",
@@ -547,115 +592,119 @@ app.post("/api/audit", async (req, res) => {
       pipes: "pipes",
       procedures: "stored procedures",
     };
-    const activeScope = (scope as string[]).length > 0 ? scope as string[] : Object.keys(PROMPT_SECTIONS);
+    const activeScope = scope.length > 0 ? scope : Object.keys(PROMPT_SECTIONS);
     const scopeDesc = activeScope.map((s: string) => scopeLabels[s] || s).join(", ");
-    const schemaClause = schema ? ` Limit to schema: ${schema}.` : "";
-    const prompt = `Run a comprehensive pipeline audit on the ${database} database. Scope: ${scopeDesc}.${schemaClause} Discover all in-scope objects, run the checks described in the system prompt for each scope area, and return the full structured audit report.`;
+    const schemaClause = schema ? ` Only audit the ${database}.${schema} schema — do NOT run SHOW SCHEMAS or look at any other schema.` : "";
+    const prompt = schema
+      ? `Run a comprehensive pipeline audit on ${database}.${schema}. Scope: ${scopeDesc}.${schemaClause} Run the checks described in the system prompt for each scope area directly against ${database}.${schema} and return the full structured audit report.`
+      : `Run a comprehensive pipeline audit on the ${database} database. Scope: ${scopeDesc}. Discover all in-scope objects, run the checks described in the system prompt for each scope area, and return the full structured audit report.`;
 
     await activeSession.send(prompt);
 
-    // Stream events — capture iterator so req.on('close') can break the loop
+    // Stream events into the job buffer
     let report: unknown = null;
     let reportEmitted = false;
     const stream = activeSession.stream() as AsyncIterableIterator<Record<string, unknown>>;
-    streamIterator = stream as AsyncIterableIterator<unknown>;
     for await (const event of stream) {
-      // Bail out immediately if client disconnected
-      if (clientDisconnected) break;
-
-      try {
-        if (event.type === "assistant") {
-          // Extract text and tool_use blocks from assistant messages
-          for (const block of event.content) {
-            if (block.type === "text" && block.text.trim()) {
-              // Try to parse as structured report JSON
-              try {
-                const parsed = JSON.parse(block.text);
-                if (parsed.findings) {
-                  report = parsed;
-                  reportEmitted = true;
-                  res.write(ndjsonLine({ type: "report", report: parsed }));
-                  // Emit result immediately and stop — the audit is done
-                  res.write(
-                    ndjsonLine({
-                      type: "result",
-                      isError: false,
-                      numTurns: 0,
-                      durationMs: Date.now() - toolCounter.start,
-                      toolCalls: toolCounter.count,
-                    })
-                  );
-                }
-              } catch {
-                // Not JSON — skip narrative text during audit entirely.
-                // The tool calls stream provides progress, and the report
-                // accordion provides the final structured output.
+      if (event.type === "assistant") {
+        for (const block of (event.content as unknown as Array<Record<string, unknown>>)) {
+          if (block.type === "text" && (block.text as string).trim()) {
+            try {
+              const parsed = JSON.parse(block.text as string);
+              if (parsed.findings) {
+                report = parsed;
+                reportEmitted = true;
+                pushJobEvent(jobId, { type: "report", report: parsed });
+                pushJobEvent(jobId, {
+                  type: "result",
+                  isError: false,
+                  numTurns: 0,
+                  durationMs: Date.now() - toolCounter.start,
+                  toolCalls: toolCounter.count,
+                });
               }
-            } else if (block.type === "tool_use") {
-              res.write(
-                ndjsonLine({
-                  type: "tool_use",
-                  toolName: block.name,
-                  toolId: block.id,
-                  input: block.input,
-                })
-              );
-            } else if (block.type === "thinking") {
-              res.write(
-                ndjsonLine({ type: "thinking", text: block.thinking })
-              );
+            } catch {
+              // Not JSON — skip narrative text
             }
+          } else if (block.type === "tool_use") {
+            pushJobEvent(jobId, {
+              type: "tool_use",
+              toolName: block.name,
+              toolId: block.id,
+              input: block.input,
+            });
+          } else if (block.type === "thinking") {
+            pushJobEvent(jobId, { type: "thinking", text: block.thinking });
           }
-          // If we just emitted the report, stop the stream
-          if (reportEmitted) break;
-        } else if (event.type === "result") {
-          const resultEvent: Record<string, unknown> = {
-            type: "result",
-            isError: event.is_error,
-            numTurns: event.num_turns,
-            durationMs: event.duration_ms,
-            toolCalls: toolCounter.count,
-          };
-
-          if (!event.is_error && event.subtype === "success") {
-            if (event.structured_output && !report) {
-              report = event.structured_output;
-              resultEvent.report = event.structured_output;
-            }
-            resultEvent.usage = event.usage;
-          }
-
-          res.write(ndjsonLine(resultEvent));
-          break;
         }
-      } catch {
-        // Write error, client likely disconnected
+        if (reportEmitted) break;
+      } else if (event.type === "result") {
+        const resultEvent: Record<string, unknown> = {
+          type: "result",
+          isError: event.is_error,
+          numTurns: event.num_turns,
+          durationMs: event.duration_ms,
+          toolCalls: toolCounter.count,
+        };
+
+        if (!event.is_error && event.subtype === "success") {
+          if (event.structured_output && !report) {
+            report = event.structured_output;
+            resultEvent.report = event.structured_output;
+          }
+          resultEvent.usage = event.usage;
+        }
+
+        pushJobEvent(jobId, resultEvent);
         break;
       }
     }
 
-    streamIterator = null; // Clean up iterator reference
+    // Send email report if requested
+    if (sendEmail && report) {
+      const durationMs = Date.now() - toolCounter.start;
+      sendReportEmail(
+        report as Record<string, unknown>,
+        database,
+        schema,
+        durationMs,
+        toolCounter.count
+      );
+    }
 
-    if (!clientDisconnected) {
-      try { res.end(); } catch { /* already closed */ }
-    }
+    job.done = true;
   } catch (error) {
-    const msg =
-      error instanceof Error ? error.message : "Unknown error occurred";
-    console.error("Audit error:", msg);
-    if (!clientDisconnected) {
-      try {
-        res.write(ndjsonLine({ type: "error", message: msg }));
-        res.end();
-      } catch {
-        /* already closed */
-      }
-    }
+    const msg = error instanceof Error ? error.message : "Unknown error occurred";
+    console.error("Audit job error:", msg);
+    pushJobEvent(jobId, { type: "error", message: msg });
+    job.done = true;
+    job.error = msg;
   }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/audit/progress/:jobId — poll for new events
+// ---------------------------------------------------------------------------
+app.get("/api/audit/progress/:jobId", (req, res) => {
+  const { jobId } = req.params;
+  const after = parseInt(String(req.query.after || "0"), 10);
+
+  const job = jobStore.get(jobId);
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+
+  const newEvents = job.events.slice(after);
+  res.json({
+    events: newEvents,
+    cursor: job.events.length,
+    done: job.done,
+  });
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/chat — send a follow-up message to the active session
+// POST /api/chat — send a follow-up message (poll-based: returns jobId)
 // ---------------------------------------------------------------------------
 app.post("/api/chat", async (req, res) => {
   const { message } = req.body || {};
@@ -668,63 +717,261 @@ app.post("/api/chat", async (req, res) => {
     return res.status(400).json({ error: "No active audit session. Run an audit first." });
   }
 
-  res.setHeader("Content-Type", "application/x-ndjson");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
+  const jobId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  jobStore.set(jobId, { events: [], done: false });
+
+  res.json({ jobId });
+
+  // Run chat in the background
+  runChatJob(jobId, message).catch((err) => {
+    console.error("Chat job error:", err);
+  });
+});
+
+// Background chat runner
+async function runChatJob(jobId: string, message: string) {
+  const job = jobStore.get(jobId);
+  if (!job || !activeSession) {
+    if (job) {
+      pushJobEvent(jobId, { type: "error", message: "No active audit session." });
+      job.done = true;
+    }
+    return;
+  }
 
   try {
     await activeSession.send(message);
 
     for await (const event of activeSession.stream()) {
-      try {
-        if (event.type === "assistant") {
-          for (const block of event.content) {
-            if (block.type === "text" && block.text.trim()) {
-              res.write(ndjsonLine({ type: "text", text: block.text }));
-            } else if (block.type === "tool_use") {
-              res.write(
-                ndjsonLine({
-                  type: "tool_use",
-                  toolName: block.name,
-                  toolId: block.id,
-                  input: block.input,
-                })
-              );
-            } else if (block.type === "thinking") {
-              res.write(
-                ndjsonLine({ type: "thinking", text: block.thinking })
-              );
-            }
+      if (event.type === "assistant") {
+        for (const block of (event.content as unknown as Array<Record<string, unknown>>)) {
+          if (block.type === "text" && (block.text as string).trim()) {
+            pushJobEvent(jobId, { type: "text", text: block.text });
+          } else if (block.type === "tool_use") {
+            pushJobEvent(jobId, {
+              type: "tool_use",
+              toolName: block.name,
+              toolId: block.id,
+              input: block.input,
+            });
+          } else if (block.type === "thinking") {
+            pushJobEvent(jobId, { type: "thinking", text: block.thinking });
           }
-        } else if (event.type === "result") {
-          res.write(
-            ndjsonLine({
-              type: "result",
-              isError: event.is_error,
-              numTurns: event.num_turns,
-              durationMs: event.duration_ms,
-            })
-          );
-          break;
         }
-      } catch {
+      } else if (event.type === "result") {
+        pushJobEvent(jobId, {
+          type: "result",
+          isError: event.is_error,
+          numTurns: event.num_turns,
+          durationMs: event.duration_ms,
+        });
         break;
       }
     }
 
-    res.end();
+    job.done = true;
   } catch (error) {
-    const msg =
-      error instanceof Error ? error.message : "Unknown error occurred";
+    const msg = error instanceof Error ? error.message : "Unknown error occurred";
     console.error("Chat error:", msg);
-    try {
-      res.write(ndjsonLine({ type: "error", message: msg }));
-      res.end();
-    } catch {
-      /* already closed */
-    }
+    pushJobEvent(jobId, { type: "error", message: msg });
+    job.done = true;
+    job.error = msg;
   }
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/suggest-fix — ask CoCo to suggest a fix for a specific finding
+// ---------------------------------------------------------------------------
+app.post("/api/suggest-fix", async (req, res) => {
+  const { finding, database } = req.body || {};
+
+  if (!finding || !database) {
+    return res.status(400).json({ error: "finding and database are required" });
+  }
+
+  if (fixJobActive) {
+    return res.status(409).json({ error: "A fix is already in progress. Wait for it to finish or dismiss it." });
+  }
+
+  fixJobActive = true;
+  const jobId = `fix-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  jobStore.set(jobId, { events: [], done: false });
+
+  // Close any previous fix session
+  if (fixSession) {
+    const prev = fixSession;
+    fixSession = null;
+    prev.close().catch(() => {});
+  }
+
+  res.json({ jobId });
+
+  // Run in background
+  runSuggestFixJob(jobId, finding, database).catch((err) => {
+    console.error("Suggest fix job error:", err);
+  }).finally(() => {
+    fixJobActive = false;
+  });
+});
+
+// Background suggest-fix runner — always uses a fresh ephemeral session
+async function runSuggestFixJob(
+  jobId: string,
+  finding: Record<string, unknown>,
+  database: string
+) {
+  const job = jobStore.get(jobId);
+  if (!job) return;
+
+  const prompt = `Suggest a concrete fix for this pipeline audit finding on the ${database} database.
+
+Finding:
+- Severity: ${finding.severity}
+- Category: ${finding.category}
+- Object: ${finding.object}
+- Message: ${finding.message}${finding.details ? `\n- Details: ${JSON.stringify(finding.details)}` : ""}
+
+Rules:
+- Do NOT run any tools or queries. Respond with your answer directly.
+- Provide exact SQL commands in fenced code blocks where applicable.
+- Explain briefly why the fix works.
+- Keep the response under 500 words.`;
+
+  try {
+    const connection = DEFAULT_CONNECTION;
+    const ephemeralOptions: SessionOptions = {
+      connection,
+      cwd: "/tmp",
+      systemPrompt: `You are a Snowflake pipeline remediation expert. When given a finding, respond with a clear, actionable fix. Use SQL code blocks for any commands. Give the answer directly from your expertise. If the user asks you to run SQL, you may use sql_execute to run it against Snowflake. Target database: ${database}.`,
+      model: "auto",
+      maxTurns: 10,
+      canUseTool: readOnlyGuard,
+      disallowedTools: ["Write", "Edit", "Bash", "Glob", "Grep", "Read"],
+      settingSources: [],
+    };
+
+    const ephemeralSession = await Promise.race([
+      createSession(ephemeralOptions),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("createSession timed out after 30s")), 30_000)
+      ),
+    ]);
+
+    await ephemeralSession.send(prompt);
+
+    for await (const event of ephemeralSession.stream()) {
+      if (event.type === "assistant") {
+        for (const block of (event.content as unknown as Array<Record<string, unknown>>)) {
+          if (block.type === "text" && (block.text as string).trim()) {
+            pushJobEvent(jobId, { type: "text", text: block.text });
+          }
+        }
+      } else if (event.type === "result") {
+        pushJobEvent(jobId, {
+          type: "result",
+          isError: event.is_error,
+          numTurns: event.num_turns,
+          durationMs: event.duration_ms,
+        });
+        break;
+      }
+    }
+
+    // Keep session alive for follow-up chat
+    fixSession = ephemeralSession;
+    job.done = true;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "Unknown error occurred";
+    console.error("Suggest-fix error:", msg);
+    pushJobEvent(jobId, { type: "error", message: msg });
+    job.done = true;
+    job.error = msg;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/suggest-fix/chat — follow-up question in the fix session
+// ---------------------------------------------------------------------------
+app.post("/api/suggest-fix/chat", async (req, res) => {
+  const { message } = req.body || {};
+
+  if (!message || typeof message !== "string") {
+    return res.status(400).json({ error: "message is required" });
+  }
+
+  if (!fixSession) {
+    return res.status(400).json({ error: "No active fix session. Request a fix first." });
+  }
+
+  if (fixJobActive) {
+    return res.status(409).json({ error: "A fix response is still generating." });
+  }
+
+  fixJobActive = true;
+  const jobId = `fixchat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  jobStore.set(jobId, { events: [], done: false });
+
+  res.json({ jobId });
+
+  runFixChatJob(jobId, message).catch((err) => {
+    console.error("Fix chat job error:", err);
+  }).finally(() => {
+    fixJobActive = false;
+  });
+});
+
+async function runFixChatJob(jobId: string, message: string) {
+  const job = jobStore.get(jobId);
+  if (!job || !fixSession) {
+    if (job) {
+      pushJobEvent(jobId, { type: "error", message: "No active fix session." });
+      job.done = true;
+    }
+    return;
+  }
+
+  try {
+    await fixSession.send(message);
+
+    for await (const event of fixSession.stream()) {
+      if (event.type === "assistant") {
+        for (const block of (event.content as unknown as Array<Record<string, unknown>>)) {
+          if (block.type === "text" && (block.text as string).trim()) {
+            pushJobEvent(jobId, { type: "text", text: block.text });
+          }
+        }
+      } else if (event.type === "result") {
+        pushJobEvent(jobId, {
+          type: "result",
+          isError: event.is_error,
+          numTurns: event.num_turns,
+          durationMs: event.duration_ms,
+        });
+        break;
+      }
+    }
+
+    job.done = true;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "Unknown error occurred";
+    console.error("Fix chat error:", msg);
+    pushJobEvent(jobId, { type: "error", message: msg });
+    job.done = true;
+    job.error = msg;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/suggest-fix/dismiss — close the fix session
+// ---------------------------------------------------------------------------
+app.post("/api/suggest-fix/dismiss", async (_req, res) => {
+  if (fixSession) {
+    const prev = fixSession;
+    fixSession = null;
+    prev.close().catch(() => {});
+  }
+  fixJobActive = false;
+  res.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -739,14 +986,593 @@ app.get("/api/health", (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/execute-sql — run a SQL statement directly (for fix code blocks)
+// ---------------------------------------------------------------------------
+const DANGEROUS_SQL = /^\s*(DROP\s+DATABASE|TRUNCATE|DROP\s+SCHEMA|DROP\s+WAREHOUSE|DROP\s+ROLE)/i;
+
+app.post("/api/execute-sql", (req, res) => {
+  const { sql, database } = req.body || {};
+  if (!sql || typeof sql !== "string") {
+    return res.status(400).json({ error: "sql is required" });
+  }
+  if (DANGEROUS_SQL.test(sql)) {
+    return res.status(403).json({ error: "Blocked: this SQL statement is too destructive to run from the UI." });
+  }
+  try {
+    if (database) {
+      snowSql(`USE DATABASE ${database}`);
+    }
+    const rows = snowSql(sql);
+    res.json({ success: true, rows, rowCount: Array.isArray(rows) ? rows.length : 0 });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: msg });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/permissions — check current role's execute capabilities
+// ---------------------------------------------------------------------------
+app.get("/api/permissions", (req, res) => {
+  try {
+    const roleRows = snowSql("SELECT CURRENT_ROLE() AS role");
+    const row0 = roleRows[0] as Record<string, unknown>;
+    const role = String(row0?.ROLE || row0?.role || "");
+
+    // Check for known admin/powerful roles that can execute fixes
+    const ADMIN_ROLES = ["ACCOUNTADMIN", "SYSADMIN", "SECURITYADMIN", "SNOWFLAKE_INTELLIGENCE_ADMIN"];
+    let canExecute = ADMIN_ROLES.includes(role.toUpperCase());
+
+    // If not a known admin role, probe schema-level or database-level grants
+    if (!canExecute) {
+      const database = String(req.query.database || "");
+      const schema = String(req.query.schema || "");
+      if (database) {
+        try {
+          const target = schema ? `SCHEMA ${database}.${schema}` : `DATABASE ${database}`;
+          const grants = snowSql(`SHOW GRANTS ON ${target}`) as Record<string, unknown>[];
+          canExecute = grants.some((g) => {
+            const priv = String(g.privilege || g.PRIVILEGE || "").toUpperCase();
+            const grantee = String(g.grantee_name || g.GRANTEE_NAME || "").toUpperCase();
+            return grantee === role.toUpperCase() && ["OWNERSHIP", "ALL", "ALL PRIVILEGES", "MODIFY", "CREATE TABLE", "OPERATE", "USAGE"].includes(priv);
+          });
+        } catch { /* grant check failed — default to false */ }
+      }
+    }
+
+    res.json({ role, canExecute });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg, role: "", canExecute: false });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Helper: run snow sql and return parsed JSON rows
+// ---------------------------------------------------------------------------
+const SNOW = process.env.SNOW_PATH || "snow";
+const DEFAULT_CONNECTION = process.env.SNOW_CONNECTION || "dash-builder-si";
+const SNOW_SQL_PY = path.resolve(__dirname, "..", "snow_sql.py");
+
+function snowSql(sql: string, _connection = DEFAULT_CONNECTION): unknown[] {
+  // Escape double quotes and dollar signs for the shell double-quoted string
+  const escaped = sql.replace(/"/g, '\\"').replace(/\$/g, '\\$');
+  try {
+    const raw = execSync(
+      `python3 ${SNOW_SQL_PY} "${escaped}"`,
+      { encoding: "utf-8", timeout: 30_000, env: { ...process.env, PATH: process.env.PATH } }
+    );
+    return JSON.parse(raw);
+  } catch (err: unknown) {
+    // Strip internal command details from error messages before exposing to callers
+    const msg = err instanceof Error ? err.message : String(err);
+    const cleaned = msg
+      .replace(/Command failed:.*?\.py\s*"[^"]*"\s*/g, "")
+      .replace(/\{?"?error"?:\s*"?/i, "")
+      .replace(/"?\s*\}?\s*$/, "")
+      .replace(/\\n/g, "\n")
+      .trim();
+    throw new Error(cleaned || msg);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Email report — sends HTML-formatted audit report via SYSTEM$SEND_EMAIL
+// ---------------------------------------------------------------------------
+const EMAIL_INTEGRATION = "DASH_AT_SNOWFLAKE_EMAIL_INT";
+const EMAIL_RECIPIENT = "dash.desai@snowflake.com";
+
+function buildReportHtml(
+  report: Record<string, unknown>,
+  database: string,
+  schema: string,
+  durationMs: number,
+  toolCalls: number
+): string {
+  const summary = report.summary as Record<string, unknown> || {};
+  const findings = (report.findings || []) as Array<Record<string, unknown>>;
+  const timestamp = report.audit_timestamp || new Date().toISOString();
+  const health = String(summary.overall_health || "unknown");
+  const target = schema ? `${database}.${schema}` : database;
+
+  const healthColor: Record<string, string> = {
+    healthy: "#4caf50",
+    needs_attention: "#ff9800",
+    unhealthy: "#f44336",
+    unknown: "#9e9e9e",
+  };
+  const severityColor: Record<string, string> = {
+    critical: "#f44336",
+    warning: "#ff9800",
+    info: "#29B5E8",
+  };
+
+  const findingsRows = findings.map((f) => {
+    const sev = String(f.severity || "info");
+    const color = severityColor[sev] || "#9e9e9e";
+    return `<tr>
+      <td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;">
+        <span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;color:#fff;background:${color};">${sev.toUpperCase()}</span>
+      </td>
+      <td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;color:#546e7a;font-size:12px;">${String(f.category || "")}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;color:#263238;font-family:monospace;font-size:12px;">${String(f.object || "")}</td>
+      <td style="padding:8px 12px;border-bottom:1px solid #e0e0e0;color:#37474f;font-size:13px;">${String(f.message || "")}</td>
+    </tr>`;
+  }).join("");
+
+  const durationSec = (durationMs / 1000).toFixed(1);
+
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#f5f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <div style="max-width:800px;margin:0 auto;padding:24px;">
+    <!-- Header -->
+    <div style="background:#ffffff;border-radius:12px;padding:24px;margin-bottom:16px;border:1px solid #e0e0e0;">
+      <h1 style="margin:0 0 4px;font-size:20px;color:#263238;">Pipeline Audit Report</h1>
+      <p style="margin:0;color:#78909c;font-size:13px;">${target} &bull; ${timestamp}</p>
+    </div>
+
+    <!-- Summary -->
+    <div style="display:flex;gap:12px;margin-bottom:16px;">
+      <div style="flex:1;background:#ffffff;border-radius:10px;padding:16px;text-align:center;border:1px solid #e0e0e0;">
+        <div style="font-size:28px;font-weight:700;color:${healthColor[health] || "#9e9e9e"};">${health.replace(/_/g, " ").toUpperCase()}</div>
+        <div style="font-size:11px;color:#78909c;margin-top:4px;">Overall Health</div>
+      </div>
+      <div style="flex:1;background:#ffffff;border-radius:10px;padding:16px;text-align:center;border:1px solid #e0e0e0;">
+        <div style="font-size:28px;font-weight:700;color:#263238;">${summary.total_objects ?? 0}</div>
+        <div style="font-size:11px;color:#78909c;margin-top:4px;">Objects Audited</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:12px;margin-bottom:16px;">
+      <div style="flex:1;background:#ffffff;border-radius:10px;padding:12px;text-align:center;border:1px solid #e0e0e0;">
+        <span style="font-size:22px;font-weight:700;color:#f44336;">${summary.critical ?? 0}</span>
+        <span style="font-size:11px;color:#78909c;margin-left:6px;">Critical</span>
+      </div>
+      <div style="flex:1;background:#ffffff;border-radius:10px;padding:12px;text-align:center;border:1px solid #e0e0e0;">
+        <span style="font-size:22px;font-weight:700;color:#ff9800;">${summary.warning ?? 0}</span>
+        <span style="font-size:11px;color:#78909c;margin-left:6px;">Warning</span>
+      </div>
+      <div style="flex:1;background:#ffffff;border-radius:10px;padding:12px;text-align:center;border:1px solid #e0e0e0;">
+        <span style="font-size:22px;font-weight:700;color:#29B5E8;">${summary.info ?? 0}</span>
+        <span style="font-size:11px;color:#78909c;margin-left:6px;">Info</span>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div style="background:#ffffff;border-radius:10px;padding:12px 16px;margin-bottom:16px;border:1px solid #e0e0e0;color:#546e7a;font-size:12px;">
+      Duration: ${durationSec}s &bull; Tool calls: ${toolCalls} &bull; Findings: ${findings.length}
+    </div>
+
+    <!-- Findings Table -->
+    ${findings.length > 0 ? `
+    <div style="background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e0e0e0;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead>
+          <tr style="background:#f5f5f9;">
+            <th style="padding:10px 12px;text-align:left;color:#546e7a;font-size:11px;font-weight:600;">SEVERITY</th>
+            <th style="padding:10px 12px;text-align:left;color:#546e7a;font-size:11px;font-weight:600;">CATEGORY</th>
+            <th style="padding:10px 12px;text-align:left;color:#546e7a;font-size:11px;font-weight:600;">OBJECT</th>
+            <th style="padding:10px 12px;text-align:left;color:#546e7a;font-size:11px;font-weight:600;">MESSAGE</th>
+          </tr>
+        </thead>
+        <tbody>${findingsRows}</tbody>
+      </table>
+    </div>` : `
+    <div style="background:#ffffff;border-radius:12px;padding:24px;text-align:center;border:1px solid #e0e0e0;color:#78909c;">
+      No findings — all clear.
+    </div>`}
+
+    <!-- Footer -->
+    <div style="margin-top:24px;text-align:center;color:#90a4ae;font-size:11px;">
+      Pipeline Auditor &bull; Powered by Cortex Code Agent SDK
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+function sendReportEmail(
+  report: Record<string, unknown>,
+  database: string,
+  schema: string,
+  durationMs: number,
+  toolCalls: number
+): void {
+  try {
+    const summary = report.summary as Record<string, unknown> || {};
+    const health = String(summary.overall_health || "unknown").replace(/_/g, " ");
+    const target = schema ? `${database}.${schema}` : database;
+    const subject = `Pipeline Audit: ${target} — ${health}`;
+    const html = buildReportHtml(report, database, schema, durationMs, toolCalls);
+
+    // Base64-encode the HTML to avoid all quoting/escaping issues in SQL
+    const htmlB64 = Buffer.from(html, "utf-8").toString("base64");
+    const escapedSubject = subject.replace(/'/g, "''");
+
+    snowSql(
+      `CALL SYSTEM$SEND_EMAIL('${EMAIL_INTEGRATION}', '${EMAIL_RECIPIENT}', '${escapedSubject}', BASE64_DECODE_STRING('${htmlB64}'), 'text/html')`
+    );
+    console.log(`[Email] Audit report sent to ${EMAIL_RECIPIENT}`);
+  } catch (err) {
+    console.error("[Email] Failed to send report email:", err);
+    // Non-fatal — audit should still succeed
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Headless audit core — used by both the HTTP endpoint and the scheduler
+// ---------------------------------------------------------------------------
+interface HeadlessResult {
+  success: boolean;
+  report: Record<string, unknown> | null;
+  durationMs: number;
+  toolCalls: number;
+}
+
+async function runHeadlessAudit(
+  database: string,
+  scope: string[],
+  schema: string,
+  scheduleId: string | null,
+  sendEmail = true
+): Promise<HeadlessResult> {
+  const connection = DEFAULT_CONNECTION;
+  const toolCounter = { count: 0, start: Date.now() };
+
+  const options: SessionOptions = {
+    connection,
+    cwd: "/tmp",
+    systemPrompt: buildSystemPrompt(database, scope, schema),
+    model: "auto",
+    maxTurns: 20,
+    canUseTool: readOnlyGuard,
+    hooks: {
+      PostToolUse: [
+        { matcher: ".*", hooks: [async () => { toolCounter.count++; return {}; }] },
+      ],
+    },
+    outputFormat: {
+      type: "json_schema",
+      schema: AUDIT_REPORT_SCHEMA,
+    },
+    disallowedTools: ["Write", "Edit"],
+    settingSources: [],
+  };
+
+  const session = await createSession(options);
+
+  const scopeLabels: Record<string, string> = {
+    tables_freshness: "tables & freshness",
+    dynamic_tables: "dynamic tables",
+    tasks: "tasks",
+    views: "views",
+    streams: "streams",
+    pipes: "pipes",
+    procedures: "stored procedures",
+  };
+  const activeScope = scope.length > 0 ? scope : Object.keys(PROMPT_SECTIONS);
+  const scopeDesc = activeScope.map((s: string) => scopeLabels[s] || s).join(", ");
+  const schemaClause = schema ? ` Only audit the ${database}.${schema} schema — do NOT run SHOW SCHEMAS or look at any other schema.` : "";
+  const prompt = schema
+    ? `Run a comprehensive pipeline audit on ${database}.${schema}. Scope: ${scopeDesc}.${schemaClause} Run the checks described in the system prompt for each scope area directly against ${database}.${schema} and return the full structured audit report.`
+    : `Run a comprehensive pipeline audit on the ${database} database. Scope: ${scopeDesc}. Discover all in-scope objects, run the checks described in the system prompt for each scope area, and return the full structured audit report.`;
+
+  await session.send(prompt);
+
+  let report: Record<string, unknown> | null = null;
+
+  for await (const event of session.stream() as AsyncIterableIterator<Record<string, unknown>>) {
+    if (event.type === "assistant") {
+      for (const block of (event.content as unknown as Array<Record<string, unknown>>)) {
+        if (block.type === "text" && (block.text as string).trim()) {
+          try {
+            const parsed = JSON.parse(block.text as string);
+            if (parsed.findings) {
+              report = parsed;
+            }
+          } catch { /* not JSON */ }
+        }
+      }
+      if (report) break;
+    } else if (event.type === "result") {
+      const resultEvent = event as Record<string, unknown>;
+      if (!resultEvent.is_error && resultEvent.structured_output && !report) {
+        report = resultEvent.structured_output as Record<string, unknown>;
+      }
+      break;
+    }
+  }
+
+  const durationMs = Date.now() - toolCounter.start;
+
+  // Write to AUDIT_RESULTS table
+  if (report) {
+    const findingsCount = Array.isArray(report.findings) ? report.findings.length : 0;
+    const reportJson = JSON.stringify(report).replace(/'/g, "''");
+    const scheduleRef = scheduleId ? `'${scheduleId}'` : "NULL";
+    const schemaVal = schema ? `'${schema}'` : "''";
+    try {
+      snowSql(
+        `INSERT INTO AUTOMATED_INTELLIGENCE.AUDITOR.AUDIT_RESULTS (database, schema, report, duration_ms, tool_calls, findings_count, schedule_id) SELECT '${database}', ${schemaVal}, PARSE_JSON('${reportJson}'), ${durationMs}, ${toolCounter.count}, ${findingsCount}, ${scheduleRef}`,
+        connection
+      );
+    } catch (err) {
+      console.error("Failed to save audit result:", err);
+    }
+  }
+
+  // Send email report if requested
+  if (sendEmail && report) {
+    sendReportEmail(report, database, schema, durationMs, toolCounter.count);
+  }
+
+  await session.close().catch(() => {});
+
+  return { success: !!report, report, durationMs, toolCalls: toolCounter.count };
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/audit/headless — run audit synchronously, return JSON report
+// ---------------------------------------------------------------------------
+app.post("/api/audit/headless", async (req, res) => {
+  const {
+    database = "AUTOMATED_INTELLIGENCE",
+    scope = [],
+    schema = "",
+    schedule_id = null,
+  } = req.body || {};
+
+  try {
+    const result = await runHeadlessAudit(database, scope as string[], schema, schedule_id);
+    res.json(result);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "Unknown error";
+    console.error("Headless audit error:", msg);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Schedule CRUD — backed by AUTOMATED_INTELLIGENCE.AUDITOR.AUDIT_SCHEDULES
+// ---------------------------------------------------------------------------
+const SCHEDULES_TABLE = "AUTOMATED_INTELLIGENCE.AUDITOR.AUDIT_SCHEDULES";
+
+app.get("/api/schedules", (_req, res) => {
+  try {
+    const rows = snowSql(`SELECT * FROM ${SCHEDULES_TABLE} ORDER BY created_at DESC`);
+    res.json({ schedules: rows });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to list schedules", detail: String(err) });
+  }
+});
+
+app.post("/api/schedules", (req, res) => {
+  const { database, scope, schema, interval_minutes, cron_label, send_email } = req.body || {};
+  if (!database || !interval_minutes) {
+    return res.status(400).json({ error: "database and interval_minutes are required" });
+  }
+  const scopeArr = JSON.stringify(scope || []).replace(/'/g, "''");
+  const schemaVal = schema || "";
+  const sendEmailVal = send_email !== false; // default true
+  const nextRun = `DATEADD(minute, ${interval_minutes}, CURRENT_TIMESTAMP())`;
+  try {
+    snowSql(
+      `INSERT INTO ${SCHEDULES_TABLE} (database, connection, scope, schema, interval_minutes, cron_label, next_run, send_email) SELECT '${database}', '${DEFAULT_CONNECTION}', PARSE_JSON('${scopeArr}'), '${schemaVal}', ${interval_minutes}, '${cron_label || "Custom"}', ${nextRun}, ${sendEmailVal}`
+    );
+    const rows = snowSql(`SELECT * FROM ${SCHEDULES_TABLE} ORDER BY created_at DESC LIMIT 1`);
+    res.json({ schedule: (rows as unknown[])[0] });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to create schedule", detail: String(err) });
+  }
+});
+
+app.delete("/api/schedules/:id", (req, res) => {
+  const { id } = req.params;
+  try {
+    snowSql(`DELETE FROM ${SCHEDULES_TABLE} WHERE id = '${id}'`);
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete schedule", detail: String(err) });
+  }
+});
+
+app.patch("/api/schedules/:id", (req, res) => {
+  const { id } = req.params;
+  const { enabled } = req.body || {};
+  if (typeof enabled !== "boolean") {
+    return res.status(400).json({ error: "enabled (boolean) is required" });
+  }
+  try {
+    snowSql(`UPDATE ${SCHEDULES_TABLE} SET enabled = ${enabled} WHERE id = '${id}'`);
+    const rows = snowSql(`SELECT * FROM ${SCHEDULES_TABLE} WHERE id = '${id}'`);
+    res.json({ schedule: (rows as unknown[])[0] });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update schedule", detail: String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/audit/history — past audit results
+// ---------------------------------------------------------------------------
+app.get("/api/audit/history", (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 20, 100);
+  try {
+    const rows = snowSql(
+      `SELECT id, schedule_id, database, schema, duration_ms, tool_calls, findings_count, created_at FROM AUTOMATED_INTELLIGENCE.AUDITOR.AUDIT_RESULTS ORDER BY created_at DESC LIMIT ${limit}`
+    );
+    res.json({ results: rows });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch audit history", detail: String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/audit/email — send an audit report via email (on demand)
+// ---------------------------------------------------------------------------
+app.post("/api/audit/email", (req, res) => {
+  const { report, database, schema, durationMs, toolCalls } = req.body || {};
+  if (!report || !database) {
+    return res.status(400).json({ error: "report and database are required" });
+  }
+  try {
+    sendReportEmail(
+      report as Record<string, unknown>,
+      database,
+      schema || "",
+      durationMs || 0,
+      toolCalls || 0
+    );
+    res.json({ sent: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to send email", detail: String(err) });
+  }
+});
+
+app.get("/api/audit/history/:id", (req, res) => {
+  const { id } = req.params;
+  try {
+    const rows = snowSql(
+      `SELECT * FROM AUTOMATED_INTELLIGENCE.AUDITOR.AUDIT_RESULTS WHERE id = '${id}'`
+    );
+    if ((rows as unknown[]).length === 0) {
+      return res.status(404).json({ error: "Audit result not found" });
+    }
+    res.json({ result: (rows as unknown[])[0] });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch audit result", detail: String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// SPA fallback — serve index.html for non-API routes in production
+// ---------------------------------------------------------------------------
+if (process.env.NODE_ENV === "production") {
+  app.get("*", (_req, res) => {
+    res.sendFile(path.join(distDir, "index.html"));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// In-container scheduler — checks AUDIT_SCHEDULES every 5 min and runs due audits
+// Replaces the Snowflake Task + stored procedure approach (avoids proxy timeout)
+// ---------------------------------------------------------------------------
+const SCHEDULER_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+let schedulerRunning = false;
+
+async function checkSchedules() {
+  if (schedulerRunning) {
+    console.log("[Scheduler] Previous run still active, skipping");
+    return;
+  }
+  schedulerRunning = true;
+  console.log("[Scheduler] Checking for due audits...");
+
+  try {
+    const dueRows = snowSql(
+      `SELECT id, database, scope, schema, send_email FROM ${SCHEDULES_TABLE} WHERE enabled = TRUE AND next_run <= CURRENT_TIMESTAMP()`
+    ) as Array<Record<string, unknown>>;
+
+    if (dueRows.length === 0) {
+      console.log("[Scheduler] No due audits found");
+      schedulerRunning = false;
+      return;
+    }
+
+    console.log(`[Scheduler] Found ${dueRows.length} due audit(s)`);
+
+    for (const row of dueRows) {
+      // Snowflake returns uppercase keys via snow_sql.py
+      const scheduleId = String(row.ID ?? row.id ?? "");
+      const database = String(row.DATABASE ?? row.database ?? "");
+      const schema = String(row.SCHEMA ?? row.schema ?? "");
+      const sendEmail = Boolean(row.SEND_EMAIL ?? row.send_email ?? true);
+      const rawScope = row.SCOPE ?? row.scope;
+      let scope: string[] = [];
+      try {
+        if (typeof rawScope === "string") scope = JSON.parse(rawScope);
+        else if (Array.isArray(rawScope)) scope = rawScope as string[];
+        if (!Array.isArray(scope)) scope = [];
+      } catch { scope = []; }
+
+      // Mark as running + bump next_run immediately (prevents re-triggering)
+      try {
+        snowSql(
+          `UPDATE ${SCHEDULES_TABLE} SET last_run = CURRENT_TIMESTAMP(), last_status = 'running', next_run = DATEADD('minute', interval_minutes, CURRENT_TIMESTAMP()) WHERE id = '${scheduleId}'`
+        );
+      } catch (err) {
+        console.error(`[Scheduler] Failed to update schedule ${scheduleId}:`, err);
+        continue;
+      }
+
+      console.log(`[Scheduler] Running audit for schedule ${scheduleId}: ${database}${schema ? `.${schema}` : ""}`);
+
+      try {
+        const result = await runHeadlessAudit(database, scope, schema, scheduleId, sendEmail);
+        const status = result.success ? "success" : "failed";
+        snowSql(
+          `UPDATE ${SCHEDULES_TABLE} SET last_status = '${status}' WHERE id = '${scheduleId}'`
+        );
+        console.log(`[Scheduler] Audit ${scheduleId} completed: ${status} (${result.durationMs}ms, ${result.toolCalls} tools)`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Unknown error";
+        console.error(`[Scheduler] Audit ${scheduleId} failed:`, msg);
+        try {
+          snowSql(
+            `UPDATE ${SCHEDULES_TABLE} SET last_status = 'error' WHERE id = '${scheduleId}'`
+          );
+        } catch { /* ignore */ }
+      }
+    }
+  } catch (err) {
+    console.error("[Scheduler] Error checking schedules:", err);
+  } finally {
+    schedulerRunning = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
 app.listen(PORT, () => {
   console.log(`\nPipeline Auditor backend running on http://localhost:${PORT}`);
+  console.log(`Mode: ${process.env.NODE_ENV || "development"}`);
   console.log(`Endpoints:`);
-  console.log(`  POST /api/audit  — Start a new audit`);
-  console.log(`  POST /api/chat   — Send follow-up message`);
-  console.log(`  GET  /api/health — Health check\n`);
+  console.log(`  POST /api/audit              — Start audit (returns jobId)`);
+  console.log(`  GET  /api/audit/progress/:id — Poll audit/chat events`);
+  console.log(`  POST /api/audit/headless     — Run audit synchronously`);
+  console.log(`  POST /api/audit/email        — Email a report on demand`);
+  console.log(`  GET  /api/audit/history      — Past audit results`);
+  console.log(`  GET  /api/schedules          — List schedules`);
+  console.log(`  POST /api/schedules          — Create schedule`);
+  console.log(`  POST /api/chat               — Send follow-up (returns jobId)`);
+  console.log(`  GET  /api/health             — Health check`);
+  console.log(`\nScheduler: checking AUDIT_SCHEDULES every ${SCHEDULER_INTERVAL_MS / 1000}s\n`);
+
+  // Start the in-container scheduler
+  setInterval(checkSchedules, SCHEDULER_INTERVAL_MS);
+  // Also run once on startup (after a short delay to let things settle)
+  setTimeout(checkSchedules, 60_000);
 });
 
 process.on("SIGTERM", async () => {

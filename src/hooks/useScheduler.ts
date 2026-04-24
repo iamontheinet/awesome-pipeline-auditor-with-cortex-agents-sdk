@@ -1,103 +1,153 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 export interface AuditSchedule {
   id: string;
   database: string;
-  connection: string;
   scope: string[];
   schema: string;
   cronLabel: string;
-  intervalMs: number;
-  nextRun: number;
+  intervalMinutes: number;
+  nextRun: string;
+  lastRun: string | null;
+  lastStatus: string | null;
   enabled: boolean;
-  createdAt: number;
+  createdAt: string;
 }
 
 export const SCHEDULE_PRESETS = [
-  { label: "Every 6 hours", intervalMs: 6 * 60 * 60 * 1000 },
-  { label: "Daily at next interval", intervalMs: 24 * 60 * 60 * 1000 },
-  { label: "Every 12 hours", intervalMs: 12 * 60 * 60 * 1000 },
-  { label: "Weekly", intervalMs: 7 * 24 * 60 * 60 * 1000 },
+  { label: "Every 6 hours", intervalMinutes: 360 },
+  { label: "Every 12 hours", intervalMinutes: 720 },
+  { label: "Every 24 hours", intervalMinutes: 1440 },
+  { label: "Every 7 days", intervalMinutes: 10080 },
 ] as const;
 
-const STORAGE_KEY = "pipeline-auditor-schedules";
-const CHECK_INTERVAL_MS = 60_000;
-
-function loadSchedules(): AuditSchedule[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    return JSON.parse(raw) as AuditSchedule[];
-  } catch {
-    return [];
-  }
+// Map Snowflake row (uppercase keys) to our camelCase interface
+function rowToSchedule(row: Record<string, unknown>): AuditSchedule {
+  return {
+    id: String(row.ID ?? row.id ?? ""),
+    database: String(row.DATABASE ?? row.database ?? ""),
+    scope: Array.isArray(row.SCOPE) ? row.SCOPE : Array.isArray(row.scope) ? row.scope : [],
+    schema: String(row.SCHEMA ?? row.schema ?? ""),
+    cronLabel: String(row.CRON_LABEL ?? row.cron_label ?? "Custom"),
+    intervalMinutes: Number(row.INTERVAL_MINUTES ?? row.interval_minutes ?? 1440),
+    nextRun: String(row.NEXT_RUN ?? row.next_run ?? ""),
+    lastRun: row.LAST_RUN ?? row.last_run ? String(row.LAST_RUN ?? row.last_run) : null,
+    lastStatus: row.LAST_STATUS ?? row.last_status ? String(row.LAST_STATUS ?? row.last_status) : null,
+    enabled: Boolean(row.ENABLED ?? row.enabled ?? true),
+    createdAt: String(row.CREATED_AT ?? row.created_at ?? ""),
+  };
 }
 
-function persistSchedules(schedules: AuditSchedule[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(schedules));
-}
+const API_BASE = "/api";
 
-export function useScheduler(onTrigger: (schedule: AuditSchedule) => void) {
-  const [schedules, setSchedules] = useState<AuditSchedule[]>(loadSchedules);
-  const onTriggerRef = useRef(onTrigger);
-  onTriggerRef.current = onTrigger;
+export function useScheduler(_onTrigger?: (schedule: AuditSchedule) => void) {
+  const [schedules, setSchedules] = useState<AuditSchedule[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // Persist to localStorage on every change
-  useEffect(() => {
-    persistSchedules(schedules);
-  }, [schedules]);
-
-  // Poll every 60s and fire any due schedules
-  useEffect(() => {
-    const intervalId = setInterval(() => {
-      const now = Date.now();
-      setSchedules((prev) => {
-        let changed = false;
-        const next = prev.map((s) => {
-          if (s.enabled && s.nextRun <= now) {
-            changed = true;
-            onTriggerRef.current(s);
-            return { ...s, nextRun: now + s.intervalMs };
-          }
-          return s;
-        });
-        return changed ? next : prev;
-      });
-    }, CHECK_INTERVAL_MS);
-
-    return () => clearInterval(intervalId);
+  // Fetch schedules from server
+  const fetchSchedules = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/schedules`, { credentials: "include" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const mapped = (data.schedules as Record<string, unknown>[]).map(rowToSchedule);
+      setSchedules(mapped);
+    } catch (err) {
+      console.error("Failed to fetch schedules:", err);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  // Initial fetch + poll every 60s
+  useEffect(() => {
+    fetchSchedules();
+    const id = setInterval(fetchSchedules, 60_000);
+    return () => clearInterval(id);
+  }, [fetchSchedules]);
+
   const addSchedule = useCallback(
-    (input: Omit<AuditSchedule, "id" | "nextRun" | "createdAt">) => {
-      const now = Date.now();
-      const schedule: AuditSchedule = {
-        ...input,
-        id: crypto.randomUUID(),
-        nextRun: now + input.intervalMs,
-        createdAt: now,
-      };
-      setSchedules((prev) => [...prev, schedule]);
+    async (input: {
+      database: string;
+      scope: string[];
+      schema: string;
+      cronLabel: string;
+      intervalMinutes: number;
+      enabled: boolean;
+      sendEmail?: boolean;
+    }) => {
+      try {
+        const res = await fetch(`${API_BASE}/schedules`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            database: input.database,
+            scope: input.scope,
+            schema: input.schema,
+            interval_minutes: input.intervalMinutes,
+            cron_label: input.cronLabel,
+            send_email: input.sendEmail ?? true,
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await fetchSchedules();
+      } catch (err) {
+        console.error("Failed to create schedule:", err);
+      }
+    },
+    [fetchSchedules],
+  );
+
+  const removeSchedule = useCallback(
+    async (id: string) => {
+      try {
+        const res = await fetch(`${API_BASE}/schedules/${id}`, { method: "DELETE", credentials: "include" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setSchedules((prev) => prev.filter((s) => s.id !== id));
+      } catch (err) {
+        console.error("Failed to delete schedule:", err);
+      }
     },
     [],
   );
 
-  const removeSchedule = useCallback((id: string) => {
-    setSchedules((prev) => prev.filter((s) => s.id !== id));
-  }, []);
+  const toggleSchedule = useCallback(
+    async (id: string) => {
+      const current = schedules.find((s) => s.id === id);
+      if (!current) return;
+      try {
+        const res = await fetch(`${API_BASE}/schedules/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ enabled: !current.enabled }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await fetchSchedules();
+      } catch (err) {
+        console.error("Failed to toggle schedule:", err);
+      }
+    },
+    [schedules, fetchSchedules],
+  );
 
-  const toggleSchedule = useCallback((id: string) => {
-    setSchedules((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s)),
-    );
-  }, []);
-
-  const clearSchedules = useCallback(() => {
-    setSchedules([]);
-  }, []);
+  const clearSchedules = useCallback(async () => {
+    try {
+      await Promise.all(
+        schedules.map((s) =>
+          fetch(`${API_BASE}/schedules/${s.id}`, { method: "DELETE", credentials: "include" }),
+        ),
+      );
+      setSchedules([]);
+    } catch (err) {
+      console.error("Failed to clear schedules:", err);
+    }
+  }, [schedules]);
 
   return {
     schedules,
+    loading,
     addSchedule,
     removeSchedule,
     toggleSchedule,

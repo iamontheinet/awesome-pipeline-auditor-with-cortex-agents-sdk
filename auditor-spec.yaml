@@ -1,0 +1,21 @@
+spec:
+  containers:
+    - name: auditor
+      image: /dash_spcs/apps/dash_repo/pipeline-auditor:latest
+      env:
+        NODE_ENV: production
+        PORT: "3001"
+        SNOW_CONNECTION: dash-builder-si
+      resources:
+        requests:
+          memory: 512Mi
+          cpu: "0.5"
+        limits:
+          memory: 2Gi
+          cpu: "2"
+  endpoints:
+    - name: auditor-ui
+      port: 3001
+      public: true
+  networkPolicyConfig:
+    allowInternetEgress: true
