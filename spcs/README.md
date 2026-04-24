@@ -25,6 +25,14 @@ snow sql -c your-snowcli-connection-name -f spcs/spcs-setup.sql
 
 **IMPORTANT**: Save/copy the image repository URL from the output. You'll need it in Step 2.
 
+If you ran via `snow sql -f` and didn't see it, run this separately:
+
+```bash
+snow sql -c your-snowcli-connection-name -q "SHOW IMAGE REPOSITORIES IN SCHEMA AUDITOR_SPCS.APPS;"
+```
+
+Look for the `repository_url` column in the output.
+
 ### Step 2: Build & Push Docker Image
 
 ```bash
@@ -33,12 +41,7 @@ export REPO_URL="<your-image-repository-url>"
 ```
 
 ```bash
-# Build project
-npm run build
-```
-
-```bash
-# Build Docker image
+# Build Docker image (this also builds the project inside Docker)
 docker build --platform linux/amd64 -t pipeline-auditor:latest -f Dockerfile .
 ```
 
@@ -105,12 +108,7 @@ Open `ingress_url` (from Step 6) in a browser window to login and access the app
 ## Future Code Edits
 
 ```bash
-# Rebuild project
-npm run build
-```
-
-```bash
-# Rebuild Docker image
+# Rebuild Docker image (this also rebuilds the project inside Docker)
 docker build --platform linux/amd64 -t pipeline-auditor:latest -f Dockerfile .
 ```
 

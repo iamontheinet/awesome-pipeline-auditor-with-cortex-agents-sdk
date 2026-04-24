@@ -10,6 +10,7 @@ Use this as a starter project or template and extend or customize it. Also note 
     - [1. Clone Repo](#1-clone-repo)
     - [2. Install Dependencies](#2-install-dependencies)
     - [3. Configure Snow CLI](#3-configure-snow-cli)
+    - [4. Create Snowflake Objects](#4-create-snowflake-objects)
 - [Launch Application](#launch-application)
     - [Demo](#demo)
     - [Usage](#usage)
@@ -26,10 +27,11 @@ Use this as a starter project or template and extend or customize it. Also note 
 
 - **Node.js** >= 20.0.0
 - **npm** >= 9.0.0
+- **Python 3** (used by the SQL helper)
+- **Docker** (for SPCS deployment)
 - **Snow CLI** installed and configured with a named connection
-- **Snowflake Account**
-    - With a role that has access to the database(s) you want to audit
-    - [Cortex Code CLI](https://docs.snowflake.com/en/developer-guide/snowflake-cli/cortex-code/cortex-code-overview) installed (required by the Agent SDK)
+- [**Cortex Code CLI**](https://docs.snowflake.com/en/developer-guide/snowflake-cli/cortex-code/cortex-code-overview) (required by the Agent SDK)
+- **Snowflake Account** with a role that has access to the database(s) you want to audit
 
 ## Setup Steps
 
@@ -97,6 +99,7 @@ cd awesome-pipeline-auditor-with-cortex-agents-sdk
     │   └── README.md                           # SPCS deployment guide
     │
     ├── sql/                                    # Snowflake SQL scripts
+    │   ├── setup.sql                           # App database & table creation
     │   └── create_procedure.sql                # Stored procedure for scheduled audits
     │
     ├── Dockerfile                              # Multi-stage Docker build (for SPCS)
@@ -136,6 +139,16 @@ The connection name defaults to `default`. To use a different connection, set th
 ```bash
 export SNOW_CONNECTION=your-connection-name
 ```
+
+### 4. Create Snowflake Objects
+
+The app stores audit schedules and results in Snowflake tables. Run the setup script to create them:
+
+```bash
+snow sql -c your-connection-name -f sql/setup.sql
+```
+
+This creates the `PIPELINE_AUDITOR_DB.AUDITOR` schema with `AUDIT_SCHEDULES` and `AUDIT_RESULTS` tables.
 
 ## Launch Application
 

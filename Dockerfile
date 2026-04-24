@@ -13,7 +13,7 @@ WORKDIR /app
 # Install snow CLI + Python connector
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl bash python3 python3-pip && \
-    pip3 install --break-system-packages snowflake-cli && \
+    pip3 install --break-system-packages snowflake-cli snowflake-connector-python && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install Cortex Code CLI (needed by Agent SDK)
@@ -38,7 +38,7 @@ RUN npm ci --omit=dev
 
 ENV NODE_ENV=production
 ENV PORT=3001
-ENV SNOW_CONNECTION=dash-builder-si
+ENV SNOW_CONNECTION=default
 EXPOSE 3001
 
 CMD ["/app/entrypoint.sh"]

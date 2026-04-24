@@ -7,6 +7,7 @@
 
 import express from "express";
 import { execSync } from "child_process";
+import { existsSync } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import {
@@ -1050,9 +1051,11 @@ app.get("/api/permissions", (req, res) => {
 // ---------------------------------------------------------------------------
 // Helper: run snow sql and return parsed JSON rows
 // ---------------------------------------------------------------------------
-const SNOW = process.env.SNOW_PATH || "snow";
 const DEFAULT_CONNECTION = process.env.SNOW_CONNECTION || "default";
-const SNOW_SQL_PY = path.resolve(__dirname, "..", "snow_sql.py");
+// Local dev: snow_sql.py is in server/ (same dir as this file)
+// SPCS prod: Dockerfile copies it to /app/snow_sql.py (parent of dist-server/)
+const _localPy = path.resolve(__dirname, "snow_sql.py");
+const SNOW_SQL_PY = existsSync(_localPy) ? _localPy : path.resolve(__dirname, "..", "snow_sql.py");
 
 function snowSql(sql: string, _connection = DEFAULT_CONNECTION): unknown[] {
   // Escape double quotes and dollar signs for the shell double-quoted string

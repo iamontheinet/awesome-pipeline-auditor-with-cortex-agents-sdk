@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dist-server/
+.git/
+.vite/
+*.log
+
+# Account-specific deploy artifacts
+spcs-spec.yaml
+spcs-connections.toml
+auditor-spec.yaml
