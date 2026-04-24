@@ -29,12 +29,12 @@ def run_via_connector(sql: str) -> list[dict]:
     import snowflake.connector
     token = open(SPCS_TOKEN_PATH).read().strip()
     conn = snowflake.connector.connect(
-        account=os.environ.get("SNOWFLAKE_ACCOUNT", "sfsenorthamerica-gen_ai_hol"),
-        host=os.environ.get("SNOWFLAKE_HOST", "sfsenorthamerica-gen-ai-hol.snowflakecomputing.com"),
+        account=os.environ["SNOWFLAKE_ACCOUNT"],
+        host=os.environ["SNOWFLAKE_HOST"],
         authenticator="oauth",
         token=token,
-        warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE", "AUTOMATED_INTELLIGENCE_WH"),
-        database=os.environ.get("SNOWFLAKE_DATABASE", "AUTOMATED_INTELLIGENCE"),
+        warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
+        database=os.environ.get("SNOWFLAKE_DATABASE", ""),
     )
     try:
         cur = conn.cursor(snowflake.connector.DictCursor)

@@ -466,7 +466,7 @@ app.get("/api/schemas", (req, res) => {
 // POST /api/audit — start a new audit (poll-based: returns jobId immediately)
 // ---------------------------------------------------------------------------
 app.post("/api/audit", async (req, res) => {
-  const { database = "AUTOMATED_INTELLIGENCE", scope = [], schema = "" } =
+  const { database = "", scope = [], schema = "" } =
     req.body || {};
   const connection = DEFAULT_CONNECTION;
 
@@ -1051,7 +1051,7 @@ app.get("/api/permissions", (req, res) => {
 // Helper: run snow sql and return parsed JSON rows
 // ---------------------------------------------------------------------------
 const SNOW = process.env.SNOW_PATH || "snow";
-const DEFAULT_CONNECTION = process.env.SNOW_CONNECTION || "dash-builder-si";
+const DEFAULT_CONNECTION = process.env.SNOW_CONNECTION || "default";
 const SNOW_SQL_PY = path.resolve(__dirname, "..", "snow_sql.py");
 
 function snowSql(sql: string, _connection = DEFAULT_CONNECTION): unknown[] {
@@ -1079,8 +1079,8 @@ function snowSql(sql: string, _connection = DEFAULT_CONNECTION): unknown[] {
 // ---------------------------------------------------------------------------
 // Email report — sends HTML-formatted audit report via SYSTEM$SEND_EMAIL
 // ---------------------------------------------------------------------------
-const EMAIL_INTEGRATION = "DASH_AT_SNOWFLAKE_EMAIL_INT";
-const EMAIL_RECIPIENT = "dash.desai@snowflake.com";
+const EMAIL_INTEGRATION = process.env.EMAIL_INTEGRATION || "";
+const EMAIL_RECIPIENT = process.env.EMAIL_RECIPIENT || "";
 
 function buildReportHtml(
   report: Record<string, unknown>,
@@ -1314,7 +1314,7 @@ async function runHeadlessAudit(
     const schemaVal = schema ? `'${schema}'` : "''";
     try {
       snowSql(
-        `INSERT INTO AUTOMATED_INTELLIGENCE.AUDITOR.AUDIT_RESULTS (database, schema, report, duration_ms, tool_calls, findings_count, schedule_id) SELECT '${database}', ${schemaVal}, PARSE_JSON('${reportJson}'), ${durationMs}, ${toolCounter.count}, ${findingsCount}, ${scheduleRef}`,
+        `INSERT INTO ${RESULTS_TABLE} (database, schema, report, duration_ms, tool_calls, findings_count, schedule_id) SELECT '${database}', ${schemaVal}, PARSE_JSON('${reportJson}'), ${durationMs}, ${toolCounter.count}, ${findingsCount}, ${scheduleRef}`,
         connection
       );
     } catch (err) {
@@ -1337,7 +1337,7 @@ async function runHeadlessAudit(
 // ---------------------------------------------------------------------------
 app.post("/api/audit/headless", async (req, res) => {
   const {
-    database = "AUTOMATED_INTELLIGENCE",
+    database = "",
     scope = [],
     schema = "",
     schedule_id = null,
@@ -1354,9 +1354,11 @@ app.post("/api/audit/headless", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Schedule CRUD — backed by AUTOMATED_INTELLIGENCE.AUDITOR.AUDIT_SCHEDULES
+// Schedule CRUD — backed by configurable tables
 // ---------------------------------------------------------------------------
-const SCHEDULES_TABLE = "AUTOMATED_INTELLIGENCE.AUDITOR.AUDIT_SCHEDULES";
+const AUDITOR_SCHEMA = process.env.AUDITOR_SCHEMA || "PIPELINE_AUDITOR_DB.AUDITOR";
+const SCHEDULES_TABLE = `${AUDITOR_SCHEMA}.AUDIT_SCHEDULES`;
+const RESULTS_TABLE = `${AUDITOR_SCHEMA}.AUDIT_RESULTS`;
 
 app.get("/api/schedules", (_req, res) => {
   try {
@@ -1419,7 +1421,7 @@ app.get("/api/audit/history", (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 20, 100);
   try {
     const rows = snowSql(
-      `SELECT id, schedule_id, database, schema, duration_ms, tool_calls, findings_count, created_at FROM AUTOMATED_INTELLIGENCE.AUDITOR.AUDIT_RESULTS ORDER BY created_at DESC LIMIT ${limit}`
+      `SELECT id, schedule_id, database, schema, duration_ms, tool_calls, findings_count, created_at FROM ${RESULTS_TABLE} ORDER BY created_at DESC LIMIT ${limit}`
     );
     res.json({ results: rows });
   } catch (err) {
@@ -1453,7 +1455,7 @@ app.get("/api/audit/history/:id", (req, res) => {
   const { id } = req.params;
   try {
     const rows = snowSql(
-      `SELECT * FROM AUTOMATED_INTELLIGENCE.AUDITOR.AUDIT_RESULTS WHERE id = '${id}'`
+      `SELECT * FROM ${RESULTS_TABLE} WHERE id = '${id}'`
     );
     if ((rows as unknown[]).length === 0) {
       return res.status(404).json({ error: "Audit result not found" });

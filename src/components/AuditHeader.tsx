@@ -144,9 +144,7 @@ export function AuditHeader({
         const dbs = data.databases || [];
         setDatabases(dbs);
         let selectedDb = "";
-        if (dbs.includes("AUTOMATED_INTELLIGENCE")) {
-          selectedDb = "AUTOMATED_INTELLIGENCE";
-        } else if (dbs.length > 0) {
+        if (dbs.length > 0) {
           selectedDb = dbs[0];
         }
         if (selectedDb) {

@@ -1,0 +1,38 @@
+spec:
+  containers:
+  - name: auditor
+    image: <your-repo-url>/pipeline-auditor:latest
+    env:
+      NODE_ENV: production
+      PORT: "3001"
+      SNOW_CONNECTION: pat
+      CORTEX_CODE_AGENT_SDK_SKIP_VERSION_CHECK: "1"
+      SNOWFLAKE_ACCOUNT: "<your-account-identifier>"
+      SNOWFLAKE_HOST: "<your-account>.snowflakecomputing.com"
+      SNOWFLAKE_WAREHOUSE: "<your-warehouse>"
+      SNOWFLAKE_DATABASE: "<your-database>"
+      SNOWFLAKE_PAT_ROLE: "<your-role>"
+      AUDITOR_SCHEMA: "PIPELINE_AUDITOR_DB.AUDITOR"
+      # Optional: email integration for sending audit reports
+      # EMAIL_INTEGRATION: "YOUR_EMAIL_INTEGRATION"
+      # EMAIL_RECIPIENT: "you@example.com"
+    secrets:
+    - snowflakeSecret: AUDITOR_SPCS.APPS.AUDITOR_PAT_SECRET
+      secretKeyRef: username
+      envVarName: SNOWFLAKE_PAT_USER
+    - snowflakeSecret: AUDITOR_SPCS.APPS.AUDITOR_PAT_SECRET
+      secretKeyRef: password
+      envVarName: SNOWFLAKE_PAT_PASSWORD
+    resources:
+      requests:
+        memory: 512Mi
+        cpu: "0.5"
+      limits:
+        memory: 2Gi
+        cpu: "1"
+  endpoints:
+  - name: auditor-ui
+    port: 3001
+    public: true
+  networkPolicyConfig:
+    allowInternetEgress: true

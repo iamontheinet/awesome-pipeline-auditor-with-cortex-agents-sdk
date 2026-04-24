@@ -1,0 +1,110 @@
+-- ============================================================================
+-- SPCS Initial Setup
+-- ============================================================================
+-- Execute this file using Snow CLI:
+--   snow sql -c your-snowcli-connection-name -f spcs/spcs-setup.sql
+--
+-- Or run individual statements in Snowsight.
+-- ============================================================================
+
+SET CURRENT_ROLE_NAME = CURRENT_ROLE();
+
+-- Step 1: Create database and schema for SPCS objects
+CREATE DATABASE IF NOT EXISTS AUDITOR_SPCS
+  COMMENT = 'Database for Pipeline Auditor SPCS objects';
+
+USE DATABASE AUDITOR_SPCS;
+
+CREATE SCHEMA IF NOT EXISTS APPS
+  COMMENT = 'Schema for SPCS application objects';
+
+USE SCHEMA APPS;
+
+-- Step 2: Create image repository
+CREATE IMAGE REPOSITORY IF NOT EXISTS AUDITOR_REPO
+  COMMENT = 'Repository for Docker images';
+
+-- Show repository URL (save this — you need it for docker push)
+SHOW IMAGE REPOSITORIES IN SCHEMA;
+
+-- Step 3: Create compute pool
+CREATE COMPUTE POOL IF NOT EXISTS AUDITOR_POOL
+  MIN_NODES = 1
+  MAX_NODES = 1
+  INSTANCE_FAMILY = CPU_X64_XS
+  AUTO_RESUME = TRUE
+  AUTO_SUSPEND_SECS = 3600
+  COMMENT = 'Compute pool for Pipeline Auditor service';
+
+-- Check compute pool status (should be ACTIVE or IDLE)
+DESCRIBE COMPUTE POOL AUDITOR_POOL;
+
+-- Step 4: Create stage for service specifications
+CREATE STAGE IF NOT EXISTS SPECS
+  ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')
+  COMMENT = 'Stage for storing service specification files';
+
+-- Step 5: Create network rule for external access
+-- Required for Cortex Code Agent SDK to reach Snowflake APIs
+CREATE NETWORK RULE IF NOT EXISTS ALLOW_ALL_RULE
+  TYPE = 'HOST_PORT'
+  MODE = 'EGRESS'
+  VALUE_LIST = ('0.0.0.0:443', '0.0.0.0:80')
+  COMMENT = 'Allow outbound HTTP/HTTPS traffic';
+
+CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS ALLOW_ALL_INTEGRATION
+  ALLOWED_NETWORK_RULES = (ALLOW_ALL_RULE)
+  ENABLED = TRUE
+  COMMENT = 'External access integration for container services';
+
+-- Step 6: Create a secret for PAT authentication (used by Cortex Code Agent SDK)
+-- Replace the username and password with your own PAT credentials
+CREATE SECRET IF NOT EXISTS AUDITOR_PAT_SECRET
+  TYPE = PASSWORD
+  USERNAME = 'YOUR_USERNAME'
+  PASSWORD = 'YOUR_PAT_TOKEN'
+  COMMENT = 'Personal Access Token for Cortex Code Agent SDK';
+
+-- Step 7: Create the auditor database objects
+CREATE DATABASE IF NOT EXISTS PIPELINE_AUDITOR_DB;
+CREATE SCHEMA IF NOT EXISTS PIPELINE_AUDITOR_DB.AUDITOR;
+
+-- Schedule tracking table
+CREATE TABLE IF NOT EXISTS PIPELINE_AUDITOR_DB.AUDITOR.AUDIT_SCHEDULES (
+  ID STRING DEFAULT UUID_STRING(),
+  DATABASE_NAME STRING,
+  SCHEMA_NAME STRING,
+  SCOPE ARRAY,
+  CRON STRING,
+  INTERVAL_MINUTES NUMBER,
+  ENABLED BOOLEAN DEFAULT TRUE,
+  CREATED_AT TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
+  LAST_RUN TIMESTAMP_TZ,
+  NEXT_RUN TIMESTAMP_TZ,
+  LAST_STATUS STRING
+);
+
+-- Audit results table
+CREATE TABLE IF NOT EXISTS PIPELINE_AUDITOR_DB.AUDITOR.AUDIT_RESULTS (
+  ID STRING DEFAULT UUID_STRING(),
+  DATABASE_NAME STRING,
+  SCHEMA_NAME STRING,
+  SCOPE ARRAY,
+  REPORT VARIANT,
+  CREATED_AT TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+-- Grant privileges to current role
+GRANT USAGE ON DATABASE AUDITOR_SPCS TO ROLE IDENTIFIER($CURRENT_ROLE_NAME);
+GRANT USAGE ON SCHEMA AUDITOR_SPCS.APPS TO ROLE IDENTIFIER($CURRENT_ROLE_NAME);
+GRANT READ, WRITE ON STAGE AUDITOR_SPCS.APPS.SPECS TO ROLE IDENTIFIER($CURRENT_ROLE_NAME);
+GRANT USAGE ON COMPUTE POOL AUDITOR_POOL TO ROLE IDENTIFIER($CURRENT_ROLE_NAME);
+GRANT MONITOR ON COMPUTE POOL AUDITOR_POOL TO ROLE IDENTIFIER($CURRENT_ROLE_NAME);
+
+-- Verify setup
+SHOW COMPUTE POOLS LIKE 'AUDITOR_POOL';
+SHOW STAGES IN SCHEMA AUDITOR_SPCS.APPS;
+SHOW IMAGE REPOSITORIES IN SCHEMA AUDITOR_SPCS.APPS;
+
+SELECT "repository_url" AS "SAVE THIS REPOSITORY URL"
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));

@@ -1,4 +1,10 @@
 node_modules/
 dist/
+dist-server/
 .vite/
 *.log
+
+# SPCS deploy artifacts (account-specific — use spcs/spcs-spec.yaml.example as template)
+spcs-spec.yaml
+spcs-connections.toml
+auditor-spec.yaml

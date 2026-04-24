@@ -1,4 +1,11 @@
-CREATE OR REPLACE PROCEDURE AUTOMATED_INTELLIGENCE.AUDITOR.RUN_DUE_AUDITS()
+-- ============================================================================
+-- Stored procedure for processing due scheduled audits
+-- ============================================================================
+-- Update the fully-qualified table name below to match your AUDITOR_SCHEMA.
+-- Default: PIPELINE_AUDITOR_DB.AUDITOR
+-- ============================================================================
+
+CREATE OR REPLACE PROCEDURE PIPELINE_AUDITOR_DB.AUDITOR.RUN_DUE_AUDITS()
 RETURNS STRING
 LANGUAGE SQL
 EXECUTE AS CALLER
@@ -7,12 +14,12 @@ $$
 BEGIN
   LET due_count INTEGER := (
     SELECT COUNT(*)
-    FROM AUTOMATED_INTELLIGENCE.AUDITOR.AUDIT_SCHEDULES
+    FROM PIPELINE_AUDITOR_DB.AUDITOR.AUDIT_SCHEDULES
     WHERE ENABLED = TRUE
       AND NEXT_RUN <= CURRENT_TIMESTAMP()
   );
 
-  UPDATE AUTOMATED_INTELLIGENCE.AUDITOR.AUDIT_SCHEDULES
+  UPDATE PIPELINE_AUDITOR_DB.AUDITOR.AUDIT_SCHEDULES
   SET LAST_RUN = CURRENT_TIMESTAMP(),
       LAST_STATUS = 'running',
       NEXT_RUN = DATEADD('minute', INTERVAL_MINUTES, CURRENT_TIMESTAMP())
