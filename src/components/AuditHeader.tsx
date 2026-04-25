@@ -224,21 +224,17 @@ export function AuditHeader({
             {/* Row 1: selectors + button */}
             <Stack direction="row" spacing={1} alignItems="center">
               <FormControl size="small" sx={{ width: 280, flexShrink: 0 }}>
-                <InputLabel sx={{ fontSize: "0.8rem" }}>Database</InputLabel>
+                <InputLabel sx={{ fontSize: "0.75rem" }}>Database</InputLabel>
                 <Select
                   value={database}
                   label="Database"
                   onChange={(e) => handleDatabaseChange(e.target.value)}
                   disabled={selectorsDisabled || databasesLoading || databases.length === 0}
-                  sx={{ borderRadius: 1.5, fontSize: "0.8rem" }}
-                  endAdornment={
-                    databasesLoading ? (
-                      <CircularProgress size={16} sx={{ mr: 2 }} />
-                    ) : undefined
-                  }
+                  sx={{ borderRadius: 1.5, fontSize: "0.75rem" }}
+                  MenuProps={{ PaperProps: { sx: { maxHeight: 320, "&::-webkit-scrollbar": { width: 6 }, "&::-webkit-scrollbar-thumb": { bgcolor: (t) => alpha(t.palette.text.primary, 0.2), borderRadius: 3 }, "&::-webkit-scrollbar-track": { bgcolor: "transparent" } } } }}
                 >
                   {databases.map((db) => (
-                    <MenuItem key={db} value={db} sx={{ fontSize: "0.8rem" }}>
+                    <MenuItem key={db} value={db} sx={{ fontSize: "0.75rem" }}>
                       {db}
                     </MenuItem>
                   ))}
@@ -259,21 +255,17 @@ export function AuditHeader({
               </Tooltip>
 
               <FormControl size="small" sx={{ width: 200, flexShrink: 0 }}>
-                <InputLabel sx={{ fontSize: "0.8rem" }}>Schema</InputLabel>
+                <InputLabel sx={{ fontSize: "0.75rem" }}>Schema</InputLabel>
                 <Select
                   value={schema}
                   label="Schema"
                   onChange={(e) => setSchema(e.target.value)}
                   disabled={selectorsDisabled || schemasLoading || !database}
-                  sx={{ borderRadius: 1.5, fontSize: "0.8rem" }}
-                  endAdornment={
-                    schemasLoading ? (
-                      <CircularProgress size={16} sx={{ mr: 2 }} />
-                    ) : undefined
-                  }
+                  sx={{ borderRadius: 1.5, fontSize: "0.75rem" }}
+                  MenuProps={{ PaperProps: { sx: { maxHeight: 320, "&::-webkit-scrollbar": { width: 6 }, "&::-webkit-scrollbar-thumb": { bgcolor: (t) => alpha(t.palette.text.primary, 0.2), borderRadius: 3 }, "&::-webkit-scrollbar-track": { bgcolor: "transparent" } } } }}
                 >
                   {schemas.map((s) => (
-                    <MenuItem key={s} value={s} sx={{ fontSize: "0.8rem" }}>
+                    <MenuItem key={s} value={s} sx={{ fontSize: "0.75rem" }}>
                       {s}
                     </MenuItem>
                   ))}
