@@ -1,6 +1,6 @@
 # Overview
 
-This application provides an automated pipeline auditing interface for Snowflake data pipelines. It uses the [Cortex Code Agent SDK](https://docs.snowflake.com/en/developer-guide/snowflake-cli/cortex-code/cortex-code-agent-sdk) to analyze your database schemas — auditing tasks, dynamic tables, streams, pipes, and more — and provides actionable fix suggestions with follow-up chat. The interface is built with React, TypeScript, and Material-UI.
+This application provides an automated pipeline auditing interface for Snowflake data pipelines. It uses the [Cortex Code Agent SDK](https://docs.snowflake.com/en/user-guide/cortex-code-agent-sdk/cortex-code-agent-sdk) to analyze your database schemas — auditing tasks, dynamic tables, streams, pipes, and more — and provides actionable fix suggestions with follow-up chat. The interface is built with React, TypeScript, and Material-UI.
 
 Use this as a starter project or template and extend or customize it. Also note that the agent can make mistakes, so double-check responses.
 
@@ -30,7 +30,7 @@ Use this as a starter project or template and extend or customize it. Also note 
 - **Python 3** (used by the SQL helper)
 - **Docker** (for SPCS deployment)
 - **Snow CLI** installed and configured with a named connection
-- [**Cortex Code CLI**](https://docs.snowflake.com/en/developer-guide/snowflake-cli/cortex-code/cortex-code-overview) (required by the Agent SDK)
+- [**Cortex Code CLI**](https://docs.snowflake.com/en/user-guide/cortex-code-agent-sdk/cortex-code-overview) (required by the Agent SDK)
 - **Snowflake Account** with a role that has access to the database(s) you want to audit
 
 ## Setup Steps
