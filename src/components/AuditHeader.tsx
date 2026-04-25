@@ -196,8 +196,8 @@ export function AuditHeader({
           direction="row"
           alignItems="center"
           spacing={1.5}
-          onClick={onReset}
-          sx={{ minWidth: 0, pt: 0.75, cursor: "pointer", "&:hover": { opacity: 0.8 } }}
+          onClick={isLoading ? undefined : onReset}
+          sx={{ minWidth: 0, pt: 0.75, cursor: isLoading ? "default" : "pointer", "&:hover": { opacity: isLoading ? 1 : 0.8 } }}
         >
           <Box
             sx={{
