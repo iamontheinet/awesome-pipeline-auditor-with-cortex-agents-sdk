@@ -155,7 +155,7 @@ This creates the `PIPELINE_AUDITOR_DB.AUDITOR` schema with `AUDIT_SCHEDULES` and
 Browse to the cloned repo folder on your local machine. Then, run the following command in a terminal window to launch both the frontend application and the backend server.
 
 ```bash
-npm run dev
+SNOW_CONNECTION=your-connection-name npm run dev
 ```
 
 Then open [http://localhost:5173](http://localhost:5173) in a browser window.
@@ -179,7 +179,7 @@ Then open [http://localhost:5173](http://localhost:5173) in a browser window.
 * Real-time audit progress with tool execution tracking
 * AI-powered fix suggestions with multi-turn follow-up chat
 * Copy-to-clipboard on all code blocks
-* Recurring audit schedules (backed by Snowflake Tasks)
+* Recurring audit schedules with in-container scheduler
 * Collapsible schedule panel with past audit history
 * Download audit reports as JSON
 * Email audit reports (requires Snowflake email integration)

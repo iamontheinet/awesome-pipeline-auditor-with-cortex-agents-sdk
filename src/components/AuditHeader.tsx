@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from "react";
-import type { Theme } from "@mui/material";
 import {
   Box,
   Button,
@@ -9,6 +8,8 @@ import {
   Chip,
   alpha,
   useTheme,
+  FormControl,
+  InputLabel,
   Select,
   MenuItem,
   CircularProgress,
@@ -19,12 +20,12 @@ import {
 import {
   PlayArrow as PlayIcon,
   Stop as StopIcon,
+  AccountTree as PipelineIcon,
   CalendarMonth as ScheduleIcon,
   ViewTimeline as PanelIcon,
   Refresh as RefreshIcon,
   DarkMode as DarkModeIcon,
   LightMode as LightModeIcon,
-  KeyboardArrowDown as ArrowIcon,
 } from "@mui/icons-material";
 import { useThemeMode } from "../ThemeContext";
 import { ScheduleDialog } from "./ScheduleDialog";
@@ -66,23 +67,6 @@ interface AuditHeaderProps {
   onToggleSchedulePanel: () => void;
 }
 
-// Minimal select styling — borderless, compact, modern
-const minimalSelectSx = (theme: Theme) => ({
-  fontSize: "0.8rem",
-  fontWeight: 600,
-  color: theme.palette.text.primary,
-  "& .MuiSelect-select": {
-    py: 0.5,
-    px: 1,
-    pr: "24px !important",
-    borderRadius: 1,
-    bgcolor: alpha(theme.palette.text.primary, 0.04),
-    "&:hover": { bgcolor: alpha(theme.palette.text.primary, 0.08) },
-  },
-  "& .MuiOutlinedInput-notchedOutline": { border: "none" },
-  "& .MuiSelect-icon": { color: alpha(theme.palette.text.primary, 0.4), fontSize: 18 },
-});
-
 export function AuditHeader({
   onStartAudit,
   onCancel,
@@ -119,7 +103,7 @@ export function AuditHeader({
     );
   };
 
-  // Fetch schemas when database changes
+  // Fetch schemas for a given database
   const fetchSchemas = useCallback((db: string) => {
     if (!db) return;
     setSchemasLoading(true);
@@ -138,13 +122,19 @@ export function AuditHeader({
   // Fetch databases
   const fetchDatabases = useCallback(() => {
     setDatabasesLoading(true);
+    setDatabases([]);
+    setDatabase("");
+    setSchemas([]);
+    setSchema("");
     fetch("/api/databases", { credentials: "include" })
       .then((r) => r.json())
       .then((data) => {
         const dbs = data.databases || [];
         setDatabases(dbs);
         let selectedDb = "";
-        if (dbs.length > 0) {
+        if (dbs.includes("AUTOMATED_INTELLIGENCE")) {
+          selectedDb = "AUTOMATED_INTELLIGENCE";
+        } else if (dbs.length > 0) {
           selectedDb = dbs[0];
         }
         if (selectedDb) {
@@ -161,10 +151,13 @@ export function AuditHeader({
     fetchDatabases();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleDatabaseChange = useCallback((db: string) => {
-    setDatabase(db);
-    fetchSchemas(db);
-  }, [fetchSchemas]);
+  const handleDatabaseChange = useCallback(
+    (db: string) => {
+      setDatabase(db);
+      fetchSchemas(db);
+    },
+    [fetchSchemas]
+  );
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -179,210 +172,284 @@ export function AuditHeader({
     <>
     <Paper
       elevation={0}
-      component="form"
-      onSubmit={handleSubmit}
       sx={{
-        py: 1,
-        px: 2,
-        borderBottom: `1px solid ${alpha(theme.palette.divider, 0.3)}`,
+        p: 2,
+        borderBottom: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
         bgcolor:
           theme.palette.mode === "dark"
-            ? alpha(theme.palette.background.paper, 0.85)
+            ? alpha(theme.palette.background.paper, 0.8)
             : theme.palette.background.paper,
-        backdropFilter: "blur(12px)",
         zIndex: 1300,
         position: "relative",
       }}
     >
-      {/* db/schema breadcrumb | scope pills | Run | actions */}
-      <Stack direction="row" alignItems="center" spacing={1} sx={{ flexWrap: "nowrap" }}>
-        {/* Database / Schema breadcrumb */}
-        <Stack direction="row" alignItems="center" spacing={0.25} sx={{ flexShrink: 0 }}>
-          <Select
-            value={database}
-            onChange={(e) => handleDatabaseChange(e.target.value)}
-            disabled={selectorsDisabled || databasesLoading || databases.length === 0}
-            displayEmpty
-            renderValue={(v) => v || (databasesLoading ? "Loading..." : "Database")}
-            IconComponent={ArrowIcon}
-            size="small"
-            sx={minimalSelectSx(theme)}
-          >
-            {databases.map((db) => (
-              <MenuItem key={db} value={db} sx={{ fontSize: "0.8rem" }}>
-                {db}
-              </MenuItem>
-            ))}
-          </Select>
-
-          <Typography sx={{ color: alpha(theme.palette.text.secondary, 0.3), fontSize: "1rem", mx: 0.25, userSelect: "none" }}>
-            /
-          </Typography>
-
-          <Select
-            value={schema}
-            onChange={(e) => setSchema(e.target.value)}
-            disabled={selectorsDisabled || schemasLoading || !database}
-            displayEmpty
-            renderValue={(v) => v || (schemasLoading ? "Loading..." : "Schema")}
-            IconComponent={ArrowIcon}
-            size="small"
-            sx={minimalSelectSx(theme)}
-          >
-            {schemas.map((s) => (
-              <MenuItem key={s} value={s} sx={{ fontSize: "0.8rem" }}>
-                {s}
-              </MenuItem>
-            ))}
-          </Select>
-
-          <Tooltip title="Refresh">
-            <span>
-            <IconButton
-              size="small"
-              onClick={() => { fetchDatabases(); if (database) fetchSchemas(database); }}
-              disabled={selectorsDisabled || databasesLoading}
-              sx={{ color: alpha(theme.palette.text.secondary, 0.3), ml: 0.25, "&:hover": { color: "primary.main" } }}
-            >
-              {databasesLoading || schemasLoading ? <CircularProgress size={14} /> : <RefreshIcon sx={{ fontSize: 16 }} />}
-            </IconButton>
-            </span>
-          </Tooltip>
-        </Stack>
-
-        {/* Scope pills — inline on row 1 */}
-        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flex: 1, overflow: "auto", mx: 1 }}>
-          {SCOPE_OPTIONS.map((opt) => {
-            const selected = scope.includes(opt.key);
-            return (
-              <Chip
-                key={opt.key}
-                label={opt.label}
-                size="small"
-                clickable
-                disabled={selectorsDisabled}
-                onClick={() => toggleScope(opt.key)}
-                variant={selected ? "filled" : "outlined"}
-                sx={{
-                  fontSize: "0.68rem",
-                  height: 22,
-                  borderRadius: 99,
-                  fontWeight: selected ? 600 : 400,
-                  flexShrink: 0,
-                  bgcolor: selected
-                    ? alpha(theme.palette.primary.main, 0.12)
-                    : "transparent",
-                  borderColor: selected
-                    ? alpha(theme.palette.primary.main, 0.4)
-                    : alpha(theme.palette.divider, 0.4),
-                  color: selected
-                    ? theme.palette.primary.main
-                    : theme.palette.text.secondary,
-                  "&:hover": {
-                    bgcolor: selected
-                      ? alpha(theme.palette.primary.main, 0.2)
-                      : alpha(theme.palette.action.hover, 0.06),
-                  },
-                }}
-              />
-            );
-          })}
-        </Stack>
-
-        {/* Primary CTA */}
-        {isLoading ? (
-          <Button
-            type="button"
-            variant={theme.palette.mode === "light" ? "outlined" : "contained"}
-            color="error"
-            size="small"
-            startIcon={<StopIcon sx={{ fontSize: 16 }} />}
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onCancel();
-            }}
-            sx={{ borderRadius: 99, textTransform: "none", fontWeight: 600, px: 2.5, height: 32, whiteSpace: "nowrap", flexShrink: 0 }}
-          >
-            Cancel
-          </Button>
-        ) : (
-          <Button
-            type="submit"
-            variant={theme.palette.mode === "light" ? "outlined" : "contained"}
-            size="small"
-            startIcon={<PlayIcon sx={{ fontSize: 16 }} />}
-            disabled={!database || !schema || scope.length === 0}
+      <Stack
+        direction={{ xs: "column", md: "row" }}
+        alignItems={{ md: "flex-start" }}
+        spacing={2}
+      >
+        {/* Logo */}
+        <Stack direction="row" alignItems="center" spacing={1.5} sx={{ minWidth: 0, pt: 0.75 }}>
+          <Box
             sx={{
-              borderRadius: 99,
-              textTransform: "none",
-              fontWeight: 600,
-              px: 2.5,
-              height: 32,
-              whiteSpace: "nowrap",
-              flexShrink: 0,
-              ...(theme.palette.mode === "light" && {
-                borderColor: theme.palette.primary.main,
-                borderWidth: 1.5,
-                "&:hover": {
-                  bgcolor: alpha(theme.palette.primary.main, 0.08),
-                  borderColor: theme.palette.primary.dark,
-                },
-              }),
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 40,
+              height: 40,
+              borderRadius: "50%",
+              bgcolor: alpha(theme.palette.primary.main, 0.1),
+              border: `2px solid ${alpha(theme.palette.primary.main, 0.2)}`,
             }}
           >
-            Run Audit
-          </Button>
-        )}
-
-        {/* Divider line */}
-        <Box sx={{ width: 1, height: 20, bgcolor: alpha(theme.palette.divider, 0.5), mx: 0.5 }} />
-
-        {/* Icon cluster */}
-        <Stack direction="row" spacing={0.25}>
-          <Tooltip title={!schema ? "Select a schema first" : "Schedule recurring audit"}>
-            <span>
-            <IconButton
-              size="small"
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setScheduleOpen(true); }}
-              disabled={selectorsDisabled || !database || !schema}
-              sx={{ color: "text.secondary", "&:hover": { color: "primary.main" } }}
+            <PipelineIcon color="primary" fontSize="small" />
+          </Box>
+          <Box>
+            <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
+              Pipeline Auditor
+            </Typography>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ fontSize: "0.7rem" }}
             >
-              <Badge
-                badgeContent={schedules.length}
-                color="primary"
-                sx={{ "& .MuiBadge-badge": { fontSize: "0.55rem", height: 14, minWidth: 14 } }}
-              >
-                <ScheduleIcon sx={{ fontSize: 20 }} />
-              </Badge>
-            </IconButton>
-            </span>
-          </Tooltip>
-
-          <Tooltip title={schedulePanelOpen ? "Hide schedule panel" : "Show schedule panel"}>
-            <IconButton
-              size="small"
-              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleSchedulePanel(); }}
-              sx={{
-                color: schedulePanelOpen ? "primary.main" : "text.secondary",
-                bgcolor: schedulePanelOpen ? alpha(theme.palette.primary.main, 0.1) : "transparent",
-                "&:hover": { color: "primary.main" },
-              }}
-            >
-              <PanelIcon sx={{ fontSize: 20 }} />
-            </IconButton>
-          </Tooltip>
-
-          <Tooltip title={mode === "dark" ? "Light mode" : "Dark mode"}>
-            <IconButton
-              size="small"
-              onClick={toggleTheme}
-              sx={{ color: "text.secondary", "&:hover": { color: "primary.main" } }}
-            >
-              {mode === "dark" ? <LightModeIcon sx={{ fontSize: 20 }} /> : <DarkModeIcon sx={{ fontSize: 20 }} />}
-            </IconButton>
-          </Tooltip>
+              Powered by Cortex Code Agent SDK
+            </Typography>
+          </Box>
         </Stack>
+
+        {/* Selectors + scope — two rows */}
+        <Box component="form" onSubmit={handleSubmit} sx={{ flex: 1 }}>
+          <Stack spacing={1}>
+            {/* Row 1: selectors + button */}
+            <Stack direction="row" spacing={1} alignItems="center">
+              <FormControl size="small" sx={{ width: 280, flexShrink: 0 }}>
+                <InputLabel sx={{ fontSize: "0.8rem" }}>Database</InputLabel>
+                <Select
+                  value={database}
+                  label="Database"
+                  onChange={(e) => handleDatabaseChange(e.target.value)}
+                  disabled={selectorsDisabled || databasesLoading || databases.length === 0}
+                  sx={{ borderRadius: 1.5, fontSize: "0.8rem" }}
+                  endAdornment={
+                    databasesLoading ? (
+                      <CircularProgress size={16} sx={{ mr: 2 }} />
+                    ) : undefined
+                  }
+                >
+                  {databases.map((db) => (
+                    <MenuItem key={db} value={db} sx={{ fontSize: "0.8rem" }}>
+                      {db}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              <Tooltip title="Refresh databases">
+                <span>
+                  <IconButton
+                    size="small"
+                    onClick={() => fetchDatabases()}
+                    disabled={selectorsDisabled || databasesLoading}
+                    sx={{ color: "text.secondary", "&:hover": { color: "primary.main" } }}
+                  >
+                    {databasesLoading ? <CircularProgress size={16} /> : <RefreshIcon sx={{ fontSize: 18 }} />}
+                  </IconButton>
+                </span>
+              </Tooltip>
+
+              <FormControl size="small" sx={{ width: 200, flexShrink: 0 }}>
+                <InputLabel sx={{ fontSize: "0.8rem" }}>Schema</InputLabel>
+                <Select
+                  value={schema}
+                  label="Schema"
+                  onChange={(e) => setSchema(e.target.value)}
+                  disabled={selectorsDisabled || schemasLoading || !database}
+                  sx={{ borderRadius: 1.5, fontSize: "0.8rem" }}
+                  endAdornment={
+                    schemasLoading ? (
+                      <CircularProgress size={16} sx={{ mr: 2 }} />
+                    ) : undefined
+                  }
+                >
+                  {schemas.map((s) => (
+                    <MenuItem key={s} value={s} sx={{ fontSize: "0.8rem" }}>
+                      {s}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              <Tooltip title="Refresh schemas">
+                <span>
+                  <IconButton
+                    size="small"
+                    onClick={() => { if (database) fetchSchemas(database); }}
+                    disabled={selectorsDisabled || schemasLoading || !database}
+                    sx={{ color: "text.secondary", "&:hover": { color: "primary.main" } }}
+                  >
+                    {schemasLoading ? <CircularProgress size={16} /> : <RefreshIcon sx={{ fontSize: 18 }} />}
+                  </IconButton>
+                </span>
+              </Tooltip>
+
+              <Box sx={{ flexShrink: 0 }}>
+                {isLoading ? (
+                  <Button
+                    type="button"
+                    variant={theme.palette.mode === "light" ? "outlined" : "contained"}
+                    color="error"
+                    startIcon={<StopIcon />}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onCancel();
+                    }}
+                    sx={{
+                      borderRadius: 1.5,
+                      textTransform: "none",
+                      minWidth: 140,
+                      whiteSpace: "nowrap",
+                      ...(theme.palette.mode === "light" && {
+                        borderColor: theme.palette.error.main,
+                        borderWidth: 1.5,
+                        "&:hover": {
+                          bgcolor: alpha(theme.palette.error.main, 0.08),
+                          borderColor: theme.palette.error.dark,
+                        },
+                      }),
+                    }}
+                  >
+                    Cancel Audit
+                  </Button>
+                ) : (
+                  <Button
+                    type="submit"
+                    variant={theme.palette.mode === "light" ? "outlined" : "contained"}
+                    startIcon={<PlayIcon />}
+                    disabled={!database || !schema || scope.length === 0}
+                    sx={{
+                      borderRadius: 1.5,
+                      textTransform: "none",
+                      fontWeight: 600,
+                      px: 3,
+                      minWidth: 140,
+                      whiteSpace: "nowrap",
+                      ...(theme.palette.mode === "light" && {
+                        borderColor: theme.palette.primary.main,
+                        borderWidth: 1.5,
+                        "&:hover": {
+                          bgcolor: alpha(theme.palette.primary.main, 0.08),
+                          borderColor: theme.palette.primary.dark,
+                        },
+                      }),
+                    }}
+                  >
+                    Run Audit
+                  </Button>
+                )}
+              </Box>
+
+              <Tooltip title={!schema ? "Select a schema first" : "Schedule recurring audit"}>
+                <span>
+                  <IconButton
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setScheduleOpen(true);
+                    }}
+                    disabled={selectorsDisabled || !database || !schema}
+                    sx={{
+                      flexShrink: 0,
+                      color: "text.secondary",
+                      "&:hover": { color: "primary.main" },
+                    }}
+                  >
+                    <Badge
+                      badgeContent={schedules.length}
+                      color="primary"
+                      sx={{
+                        "& .MuiBadge-badge": {
+                          fontSize: "0.6rem",
+                          height: 16,
+                          minWidth: 16,
+                        },
+                      }}
+                    >
+                      <ScheduleIcon />
+                    </Badge>
+                  </IconButton>
+                </span>
+              </Tooltip>
+
+              <Tooltip title={schedulePanelOpen ? "Hide schedule panel" : "Show schedule panel"}>
+                <IconButton
+                  size="small"
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleSchedulePanel(); }}
+                  sx={{
+                    flexShrink: 0,
+                    color: schedulePanelOpen ? "primary.main" : "text.secondary",
+                    bgcolor: schedulePanelOpen ? alpha(theme.palette.primary.main, 0.1) : "transparent",
+                    "&:hover": { color: "primary.main" },
+                  }}
+                >
+                  <PanelIcon sx={{ fontSize: 20 }} />
+                </IconButton>
+              </Tooltip>
+
+              <Tooltip title={mode === "dark" ? "Light mode" : "Dark mode"}>
+                <IconButton
+                  size="small"
+                  onClick={toggleTheme}
+                  sx={{ flexShrink: 0, color: "text.secondary", "&:hover": { color: "primary.main" } }}
+                >
+                  {mode === "dark" ? <LightModeIcon sx={{ fontSize: 20 }} /> : <DarkModeIcon sx={{ fontSize: 20 }} />}
+                </IconButton>
+              </Tooltip>
+            </Stack>
+
+            {/* Row 2: scope chips */}
+            <Stack direction="row" spacing={0.75} alignItems="center">
+              <Typography variant="caption" color="text.secondary" sx={{ mr: 0.5, fontSize: "0.7rem", whiteSpace: "nowrap" }}>
+                Scope:
+              </Typography>
+              {SCOPE_OPTIONS.map((opt) => {
+                const selected = scope.includes(opt.key);
+                return (
+                  <Chip
+                    key={opt.key}
+                    label={opt.label}
+                    size="small"
+                    clickable
+                    disabled={selectorsDisabled}
+                    onClick={() => toggleScope(opt.key)}
+                    variant={selected ? "filled" : "outlined"}
+                    sx={{
+                      fontSize: "0.7rem",
+                      height: 24,
+                      borderRadius: 1,
+                      fontWeight: selected ? 600 : 400,
+                      bgcolor: selected
+                        ? alpha(theme.palette.primary.main, 0.15)
+                        : "transparent",
+                      borderColor: selected
+                        ? theme.palette.primary.main
+                        : alpha(theme.palette.divider, 0.5),
+                      color: selected
+                        ? theme.palette.primary.main
+                        : theme.palette.text.secondary,
+                      "&:hover": {
+                        bgcolor: selected
+                          ? alpha(theme.palette.primary.main, 0.25)
+                          : alpha(theme.palette.action.hover, 0.08),
+                      },
+                    }}
+                  />
+                );
+              })}
+            </Stack>
+          </Stack>
+        </Box>
       </Stack>
     </Paper>
 
