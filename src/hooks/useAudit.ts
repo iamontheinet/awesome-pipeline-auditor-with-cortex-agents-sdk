@@ -437,10 +437,28 @@ export function useAudit() {
     }
   }, []);
 
+  // Reset view to landing page (works even after audit is complete)
+  const resetView = useCallback(() => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    setState({
+      isAuditing: false,
+      isLoading: false,
+      report: null,
+      messages: [],
+      toolProgress: [],
+      error: null,
+      stats: null,
+    });
+  }, []);
+
   return {
     ...state,
     startAudit,
     sendMessage,
     cancelAudit,
+    resetView,
   };
 }

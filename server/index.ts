@@ -464,6 +464,13 @@ app.get("/api/schemas", (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Auditor schema + table constants (used by both interactive and scheduled paths)
+// ---------------------------------------------------------------------------
+const AUDITOR_SCHEMA = process.env.AUDITOR_SCHEMA || "PIPELINE_AUDITOR_DB.AUDITOR";
+const SCHEDULES_TABLE = `${AUDITOR_SCHEMA}.AUDIT_SCHEDULES`;
+const RESULTS_TABLE = `${AUDITOR_SCHEMA}.AUDIT_RESULTS`;
+
+// ---------------------------------------------------------------------------
 // POST /api/audit — start a new audit (poll-based: returns jobId immediately)
 // ---------------------------------------------------------------------------
 app.post("/api/audit", async (req, res) => {
@@ -671,6 +678,25 @@ async function runAuditJob(
         durationMs,
         toolCounter.count
       );
+    }
+
+    // Save to AUDIT_RESULTS so the report appears in history
+    if (report) {
+      const durationMs = Date.now() - toolCounter.start;
+      const r = report as Record<string, unknown>;
+      const findingsCount = Array.isArray(r.findings) ? r.findings.length : 0;
+      const reportJson = JSON.stringify(r).replace(/'/g, "''");
+      const schemaVal = schema ? `'${schema}'` : "''";
+      const insertSql = `INSERT INTO ${RESULTS_TABLE} (database, schema, report, duration_ms, tool_calls, findings_count) SELECT '${database}', ${schemaVal}, PARSE_JSON('${reportJson}'), ${durationMs}, ${toolCounter.count}, ${findingsCount}`;
+      console.log(`[AuditSave] Saving report to ${RESULTS_TABLE} (${insertSql.length} chars, ${findingsCount} findings)`);
+      try {
+        snowSql(insertSql);
+        console.log("[AuditSave] Report saved successfully");
+      } catch (err) {
+        console.error("[AuditSave] Failed to save audit result:", err);
+      }
+    } else {
+      console.log("[AuditSave] No report to save (report is falsy)");
     }
 
     job.done = true;
@@ -1357,11 +1383,8 @@ app.post("/api/audit/headless", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Schedule CRUD — backed by configurable tables
+// Schedule CRUD
 // ---------------------------------------------------------------------------
-const AUDITOR_SCHEMA = process.env.AUDITOR_SCHEMA || "PIPELINE_AUDITOR_DB.AUDITOR";
-const SCHEDULES_TABLE = `${AUDITOR_SCHEMA}.AUDIT_SCHEDULES`;
-const RESULTS_TABLE = `${AUDITOR_SCHEMA}.AUDIT_RESULTS`;
 
 app.get("/api/schedules", (_req, res) => {
   try {
@@ -1421,10 +1444,9 @@ app.patch("/api/schedules/:id", (req, res) => {
 // GET /api/audit/history — past audit results
 // ---------------------------------------------------------------------------
 app.get("/api/audit/history", (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 20, 100);
   try {
     const rows = snowSql(
-      `SELECT id, schedule_id, database, schema, duration_ms, tool_calls, findings_count, created_at FROM ${RESULTS_TABLE} ORDER BY created_at DESC LIMIT ${limit}`
+      `SELECT id, schedule_id, database, schema, duration_ms, tool_calls, findings_count, created_at FROM ${RESULTS_TABLE} ORDER BY created_at DESC`
     );
     res.json({ results: rows });
   } catch (err) {

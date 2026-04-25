@@ -64,7 +64,7 @@ export function EmptyState() {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          mb: 3,
+          mb: 2,
         }}
       >
         <PipelineIcon sx={{ fontSize: 32, color: "primary.main" }} />
@@ -86,55 +86,74 @@ export function EmptyState() {
       <Typography
         variant="body2"
         color="text.secondary"
-        sx={{ mb: 3, maxWidth: 420, textAlign: "center" }}
+        sx={{ mb: 2, maxWidth: 420, textAlign: "center" }}
       >
         Comprehensive audit of your Snowflake data pipelines powered by the
         Cortex Code Agent SDK.
       </Typography>
 
-      {/* How to start — horizontal steps with pipe delimiter */}
-      <Stack
-        direction="row"
-        alignItems="center"
-        spacing={1.5}
-        sx={{ mb: 3 }}
+      {/* How to start — steps in a highlighted bar */}
+      <Paper
+        elevation={0}
+        sx={{
+          mb: 2,
+          px: 2.5,
+          py: 1,
+          borderRadius: 2,
+          bgcolor: "transparent",
+          background: `linear-gradient(135deg, ${alpha(theme.palette.primary.main, 0.22)}, ${alpha(theme.palette.secondary.main, 0.18)})`,
+          border: `1px solid ${alpha(theme.palette.primary.main, 0.35)}`,
+          width: "100%",
+          maxWidth: 520,
+        }}
       >
-        {["Select a database and schema", "Choose audit scopes", "Click Run Audit"].map((step, i) => (
-          <Stack key={i} direction="row" alignItems="center" spacing={1.5}>
-            {i > 0 && (
-              <Typography sx={{ color: alpha(theme.palette.text.secondary, 0.4), fontWeight: 300, fontSize: "1.2rem" }}>
-                |
+        <Stack
+          direction="row"
+          alignItems="center"
+          justifyContent="center"
+          spacing={1.5}
+        >
+          {["Select Database & Schema", "Select Scopes", "Run Audit"].map((step, i) => (
+            <Stack key={i} direction="row" alignItems="center" spacing={1.5}>
+              {i > 0 && (
+                <Box
+                  sx={{
+                    width: 16,
+                    height: 1,
+                    bgcolor: alpha(theme.palette.primary.main, 0.3),
+                  }}
+                />
+              )}
+              <Chip
+                label={`${i + 1}`}
+                size="small"
+                sx={{
+                  width: 20,
+                  height: 20,
+                  fontSize: "0.65rem",
+                  fontWeight: 700,
+                  bgcolor: "primary.main",
+                  color: "primary.contrastText",
+                  "& .MuiChip-label": { px: 0 },
+                }}
+              />
+              <Typography variant="body2" sx={{ fontWeight: 600, fontSize: "0.75rem", whiteSpace: "nowrap" }}>
+                {step}
               </Typography>
-            )}
-            <Chip
-              label={`${i + 1}`}
-              size="small"
-              sx={{
-                width: 22,
-                height: 22,
-                fontSize: "0.7rem",
-                fontWeight: 700,
-                bgcolor: alpha(theme.palette.primary.main, 0.15),
-                color: "primary.main",
-                "& .MuiChip-label": { px: 0 },
-              }}
-            />
-            <Typography variant="body2" sx={{ fontWeight: 500, fontSize: "0.85rem" }}>
-              {step}
-            </Typography>
-          </Stack>
-        ))}
-      </Stack>
+            </Stack>
+          ))}
+        </Stack>
+      </Paper>
 
       {/* Feature highlights — non-clickable */}
       <Box
         sx={{
           display: "grid",
           gridTemplateColumns: "1fr 1fr",
-          gap: 1.5,
+          gap: 1,
           width: "100%",
           maxWidth: 520,
-          mb: 3,
+          mb: 1.5,
         }}
       >
         {FEATURES.map((feature) => (
@@ -142,13 +161,13 @@ export function EmptyState() {
             key={feature.label}
             elevation={0}
             sx={{
-              p: 1.5,
+              p: 1.25,
               borderRadius: 2,
               bgcolor: alpha(theme.palette.primary.main, 0.04),
               border: `1px solid ${alpha(theme.palette.primary.main, 0.15)}`,
               display: "flex",
               alignItems: "flex-start",
-              gap: 1,
+              gap: 0.75,
             }}
           >
             <Box sx={{ color: "primary.main", mt: 0.25, flexShrink: 0 }}>{feature.icon}</Box>
@@ -156,7 +175,7 @@ export function EmptyState() {
               <Typography variant="caption" sx={{ fontWeight: 600, fontSize: "0.75rem", display: "block" }}>
                 {feature.label}
               </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem", lineHeight: 1.4 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem", lineHeight: 1.25 }}>
                 {feature.description}
               </Typography>
             </Box>
@@ -165,18 +184,18 @@ export function EmptyState() {
       </Box>
 
       {/* Scheduling + audit history blurbs */}
-      <Stack direction="row" spacing={2} sx={{ mb: 3, maxWidth: 520, width: "100%" }}>
+      <Stack direction="row" spacing={1} sx={{ mb: 2, maxWidth: 520, width: "100%" }}>
         <Paper
           elevation={0}
           sx={{
             flex: 1,
-            p: 1.5,
+            p: 1.25,
             borderRadius: 2,
             bgcolor: alpha(theme.palette.secondary.main, 0.04),
             border: `1px solid ${alpha(theme.palette.secondary.main, 0.15)}`,
             display: "flex",
             alignItems: "flex-start",
-            gap: 1,
+            gap: 0.75,
           }}
         >
           <ScheduleIcon sx={{ fontSize: 18, color: "secondary.main", mt: 0.25 }} />
@@ -184,7 +203,7 @@ export function EmptyState() {
             <Typography variant="caption" sx={{ fontWeight: 600, fontSize: "0.75rem", display: "block" }}>
               Schedule Audits
             </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem", lineHeight: 1.4 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem", lineHeight: 1.25 }}>
               Set up recurring audits with email reports using the calendar icon in the header.
             </Typography>
           </Box>
@@ -193,13 +212,13 @@ export function EmptyState() {
           elevation={0}
           sx={{
             flex: 1,
-            p: 1.5,
+            p: 1.25,
             borderRadius: 2,
             bgcolor: alpha(theme.palette.info.main, 0.04),
             border: `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
             display: "flex",
             alignItems: "flex-start",
-            gap: 1,
+            gap: 0.75,
           }}
         >
           <HistoryIcon sx={{ fontSize: 18, color: "info.main", mt: 0.25 }} />
@@ -207,8 +226,8 @@ export function EmptyState() {
             <Typography variant="caption" sx={{ fontWeight: 600, fontSize: "0.75rem", display: "block" }}>
               Audit History
             </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem", lineHeight: 1.4 }}>
-              View past audit results and trends in the schedule panel.
+            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem", lineHeight: 1.25 }}>
+              View past audit results and trends in the history panel.
             </Typography>
           </Box>
         </Paper>

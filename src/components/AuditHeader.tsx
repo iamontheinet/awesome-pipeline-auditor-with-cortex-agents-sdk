@@ -61,6 +61,7 @@ const DEFAULT_SCOPE = SCOPE_OPTIONS.filter((o) => o.defaultOn).map((o) => o.key)
 interface AuditHeaderProps {
   onStartAudit: (database: string, scope: AuditScope[], schema: string) => void;
   onCancel: () => void;
+  onReset: () => void;
   isLoading: boolean;
   isAuditing: boolean;
   schedulePanelOpen: boolean;
@@ -70,6 +71,7 @@ interface AuditHeaderProps {
 export function AuditHeader({
   onStartAudit,
   onCancel,
+  onReset,
   isLoading,
   isAuditing,
   schedulePanelOpen,
@@ -189,7 +191,13 @@ export function AuditHeader({
         spacing={2}
       >
         {/* Logo */}
-        <Stack direction="row" alignItems="center" spacing={1.5} sx={{ minWidth: 0, pt: 0.75 }}>
+        <Stack
+          direction="row"
+          alignItems="center"
+          spacing={1.5}
+          onClick={onReset}
+          sx={{ minWidth: 0, pt: 0.75, cursor: "pointer", "&:hover": { opacity: 0.8 } }}
+        >
           <Box
             sx={{
               display: "flex",
@@ -374,7 +382,7 @@ export function AuditHeader({
                 </span>
               </Tooltip>
 
-              <Tooltip title={schedulePanelOpen ? "Hide schedule panel" : "Show schedule panel"}>
+              <Tooltip title={schedulePanelOpen ? "Hide audit history panel" : "Show audit history panel"}>
                 <IconButton
                   size="small"
                   onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleSchedulePanel(); }}

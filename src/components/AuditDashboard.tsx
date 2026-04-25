@@ -29,6 +29,7 @@ export function AuditDashboard() {
     stats,
     startAudit,
     cancelAudit,
+    resetView,
   } = useAudit();
 
   const { fixState, requestFix, sendFollowUp, dismissFix } = useSuggestFix();
@@ -88,6 +89,7 @@ export function AuditDashboard() {
       <AuditHeader
         onStartAudit={(db, scope, schema) => startAudit(db, scope, schema)}
         onCancel={cancelAudit}
+        onReset={resetView}
         isLoading={isLoading}
         isAuditing={isAuditing}
         schedulePanelOpen={schedulePanelOpen}
@@ -156,6 +158,7 @@ export function AuditDashboard() {
           onClose={() => setSchedulePanelOpen(false)}
           width={schedulePanelWidth}
           onWidthChange={setSchedulePanelWidth}
+          refreshTrigger={stats?.durationMs}
         />
       </Box>
     </Box>

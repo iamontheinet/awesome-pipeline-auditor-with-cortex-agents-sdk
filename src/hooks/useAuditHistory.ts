@@ -24,13 +24,13 @@ function rowToResult(row: Record<string, unknown>): AuditResult {
   };
 }
 
-export function useAuditHistory(limit = 20) {
+export function useAuditHistory() {
   const [results, setResults] = useState<AuditResult[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchHistory = useCallback(async () => {
     try {
-      const res = await fetch(`/api/audit/history?limit=${limit}`, { credentials: "include" });
+      const res = await fetch(`/api/audit/history`, { credentials: "include" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const mapped = (data.results as Record<string, unknown>[]).map(rowToResult);
@@ -40,7 +40,7 @@ export function useAuditHistory(limit = 20) {
     } finally {
       setLoading(false);
     }
-  }, [limit]);
+  }, []);
 
   useEffect(() => {
     fetchHistory();

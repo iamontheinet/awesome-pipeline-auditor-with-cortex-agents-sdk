@@ -29,6 +29,7 @@ import {
   PauseCircle as PausedIcon,
   Download as DownloadIcon,
   MailOutline as MailIcon,
+  Refresh as RefreshIcon,
 } from "@mui/icons-material";
 import { useScheduler, SCHEDULE_PRESETS } from "../hooks/useScheduler";
 import type { AuditSchedule } from "../hooks/useScheduler";
@@ -60,6 +61,7 @@ interface SchedulePanelProps {
   onClose: () => void;
   width: number;
   onWidthChange: (w: number) => void;
+  refreshTrigger?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -489,13 +491,18 @@ function useDragResize(
 // ---------------------------------------------------------------------------
 // Main panel
 // ---------------------------------------------------------------------------
-export function SchedulePanel({ open, onClose, width, onWidthChange }: SchedulePanelProps) {
+export function SchedulePanel({ open, onClose, width, onWidthChange, refreshTrigger }: SchedulePanelProps) {
   const theme = useTheme();
   const [tab, setTab] = useState(0);
 
   // Scheduler data + mutations
   const { schedules, loading: schedulesLoading, toggleSchedule, removeSchedule } = useScheduler();
-  const { results, loading: historyLoading } = useAuditHistory();
+  const { results, loading: historyLoading, refresh: refreshHistory } = useAuditHistory();
+
+  // Auto-refresh history when a live audit completes (refreshTrigger changes)
+  useEffect(() => {
+    if (refreshTrigger != null) refreshHistory();
+  }, [refreshTrigger, refreshHistory]);
 
   // Per-item loading state (same pattern as ScheduleDialog)
   const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set());
@@ -588,11 +595,21 @@ export function SchedulePanel({ open, onClose, width, onWidthChange }: ScheduleP
           }}
         >
           <Typography variant="subtitle2" sx={{ fontWeight: 700, fontSize: "0.85rem" }}>
-            Scheduled Audits
+            Audit History
           </Typography>
-          <IconButton size="small" onClick={onClose} sx={{ color: "text.secondary" }}>
-            <CloseIcon fontSize="small" />
-          </IconButton>
+          <Stack direction="row" spacing={0.5} alignItems="center">
+            <IconButton
+              size="small"
+              onClick={() => refreshHistory()}
+              disabled={historyLoading}
+              sx={{ color: "text.secondary", "&:hover": { color: "primary.main" } }}
+            >
+              <RefreshIcon fontSize="small" sx={historyLoading ? { animation: "spin 1s linear infinite", "@keyframes spin": { "0%": { transform: "rotate(0deg)" }, "100%": { transform: "rotate(360deg)" } } } : undefined} />
+            </IconButton>
+            <IconButton size="small" onClick={onClose} sx={{ color: "text.secondary" }}>
+              <CloseIcon fontSize="small" />
+            </IconButton>
+          </Stack>
         </Box>
 
         {/* Tabs */}
