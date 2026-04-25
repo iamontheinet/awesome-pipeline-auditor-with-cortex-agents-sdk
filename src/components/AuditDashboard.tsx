@@ -12,6 +12,7 @@ import { EmptyState } from "./EmptyState";
 import { useAudit } from "../hooks/useAudit";
 import { useSuggestFix } from "../hooks/useSuggestFix";
 import { usePermissions } from "../hooks/usePermissions";
+import { useScheduler } from "../hooks/useScheduler";
 import { useState, useCallback } from "react";
 
 export function AuditDashboard() {
@@ -33,6 +34,9 @@ export function AuditDashboard() {
   } = useAudit();
 
   const { fixState, requestFix, sendFollowUp, dismissFix } = useSuggestFix();
+
+  // Single shared scheduler instance — feeds both AuditHeader (ScheduleDialog) and SchedulePanel
+  const scheduler = useScheduler();
 
   const permissions = usePermissions(report?.database || "", report?.schema || "");
 
@@ -94,6 +98,7 @@ export function AuditDashboard() {
         isAuditing={isAuditing}
         schedulePanelOpen={schedulePanelOpen}
         onToggleSchedulePanel={() => setSchedulePanelOpen((v) => !v)}
+        scheduler={scheduler}
       />
 
       {/* Main content area */}
@@ -159,6 +164,7 @@ export function AuditDashboard() {
           width={schedulePanelWidth}
           onWidthChange={setSchedulePanelWidth}
           refreshTrigger={stats?.durationMs}
+          scheduler={scheduler}
         />
       </Box>
     </Box>

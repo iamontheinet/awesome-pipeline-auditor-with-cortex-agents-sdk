@@ -152,5 +152,6 @@ export function useScheduler(_onTrigger?: (schedule: AuditSchedule) => void) {
     removeSchedule,
     toggleSchedule,
     clearSchedules,
+    refresh: fetchSchedules,
   } as const;
 }

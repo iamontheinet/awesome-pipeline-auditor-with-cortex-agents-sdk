@@ -62,6 +62,7 @@ interface SchedulePanelProps {
   width: number;
   onWidthChange: (w: number) => void;
   refreshTrigger?: number;
+  scheduler: ReturnType<typeof useScheduler>;
 }
 
 // ---------------------------------------------------------------------------
@@ -203,10 +204,14 @@ function PastCard({
   result,
   theme,
   onClick,
+  onDelete,
+  deleting,
 }: {
   result: AuditResult;
   theme: Theme;
   onClick: () => void;
+  onDelete: () => void;
+  deleting: boolean;
 }) {
   const hasFindings = result.findingsCount > 0;
   return (
@@ -230,20 +235,36 @@ function PastCard({
         <Typography variant="body2" sx={{ fontWeight: 600, fontSize: "0.8rem" }} noWrap>
           {result.database}
         </Typography>
-        <Chip
-          label={`${result.findingsCount} finding${result.findingsCount !== 1 ? "s" : ""}`}
-          size="small"
-          icon={hasFindings ? <ErrorIcon sx={{ fontSize: 14 }} /> : <CheckIcon sx={{ fontSize: 14 }} />}
-          sx={{
-            height: 20,
-            fontSize: "0.65rem",
-            bgcolor: hasFindings
-              ? alpha(theme.palette.warning.main, 0.12)
-              : alpha(theme.palette.success.main, 0.12),
-            color: hasFindings ? theme.palette.warning.main : theme.palette.success.main,
-            "& .MuiChip-icon": { color: "inherit" },
-          }}
-        />
+        <Stack direction="row" spacing={0.5} alignItems="center">
+          <Chip
+            label={`${result.findingsCount} finding${result.findingsCount !== 1 ? "s" : ""}`}
+            size="small"
+            icon={hasFindings ? <ErrorIcon sx={{ fontSize: 14 }} /> : <CheckIcon sx={{ fontSize: 14 }} />}
+            sx={{
+              height: 20,
+              fontSize: "0.65rem",
+              bgcolor: hasFindings
+                ? alpha(theme.palette.warning.main, 0.12)
+                : alpha(theme.palette.success.main, 0.12),
+              color: hasFindings ? theme.palette.warning.main : theme.palette.success.main,
+              "& .MuiChip-icon": { color: "inherit" },
+            }}
+          />
+          {deleting ? (
+            <CircularProgress size={16} sx={{ mx: 0.5 }} />
+          ) : (
+            <IconButton
+              size="small"
+              onClick={(e) => { e.stopPropagation(); onDelete(); }}
+              sx={{
+                color: "text.disabled",
+                "&:hover": { color: theme.palette.error.main },
+              }}
+            >
+              <DeleteIcon sx={{ fontSize: 16 }} />
+            </IconButton>
+          )}
+        </Stack>
       </Stack>
       <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.7rem" }}>
         {result.schema || "All schemas"} &middot; {formatDuration(result.durationMs)} &middot; {result.toolCalls} tools
@@ -491,13 +512,13 @@ function useDragResize(
 // ---------------------------------------------------------------------------
 // Main panel
 // ---------------------------------------------------------------------------
-export function SchedulePanel({ open, onClose, width, onWidthChange, refreshTrigger }: SchedulePanelProps) {
+export function SchedulePanel({ open, onClose, width, onWidthChange, refreshTrigger, scheduler }: SchedulePanelProps) {
   const theme = useTheme();
   const [tab, setTab] = useState(0);
 
-  // Scheduler data + mutations
-  const { schedules, loading: schedulesLoading, toggleSchedule, removeSchedule } = useScheduler();
-  const { results, loading: historyLoading, refresh: refreshHistory } = useAuditHistory();
+  // Scheduler data + mutations (shared instance from parent)
+  const { schedules, loading: schedulesLoading, toggleSchedule, removeSchedule } = scheduler;
+  const { results, loading: historyLoading, refresh: refreshHistory, removeResult } = useAuditHistory();
 
   // Auto-refresh history when a live audit completes (refreshTrigger changes)
   useEffect(() => {
@@ -534,6 +555,22 @@ export function SchedulePanel({ open, onClose, width, onWidthChange, refreshTrig
       });
     }
   }, [removeSchedule]);
+
+  // Per-item loading state for past audit result deletion
+  const [deletingResultIds, setDeletingResultIds] = useState<Set<string>>(new Set());
+
+  const handleDeleteResult = useCallback(async (id: string) => {
+    setDeletingResultIds((prev) => new Set(prev).add(id));
+    try {
+      await removeResult(id);
+    } finally {
+      setDeletingResultIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  }, [removeResult]);
 
   // Detail dialog state
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -701,6 +738,8 @@ export function SchedulePanel({ open, onClose, width, onWidthChange, refreshTrig
                       result={r}
                       theme={theme}
                       onClick={() => setDetailId(r.id)}
+                      onDelete={() => handleDeleteResult(r.id)}
+                      deleting={deletingResultIds.has(r.id)}
                     />
                   ))}
                 </Stack>

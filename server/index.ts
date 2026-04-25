@@ -1455,6 +1455,19 @@ app.get("/api/audit/history", (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// DELETE /api/audit/history/:id — delete a past audit result
+// ---------------------------------------------------------------------------
+app.delete("/api/audit/history/:id", (req, res) => {
+  const { id } = req.params;
+  try {
+    snowSql(`DELETE FROM ${RESULTS_TABLE} WHERE id = '${id}'`);
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete audit result", detail: String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/audit/email — send an audit report via email (on demand)
 // ---------------------------------------------------------------------------
 app.post("/api/audit/email", (req, res) => {

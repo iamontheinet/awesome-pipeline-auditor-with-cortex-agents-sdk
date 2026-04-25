@@ -48,5 +48,15 @@ export function useAuditHistory() {
     return () => clearInterval(id);
   }, [fetchHistory]);
 
-  return { results, loading, refresh: fetchHistory } as const;
+  const removeResult = useCallback(async (id: string) => {
+    try {
+      const res = await fetch(`/api/audit/history/${id}`, { method: "DELETE", credentials: "include" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setResults((prev) => prev.filter((r) => r.id !== id));
+    } catch (err) {
+      console.error("Failed to delete audit result:", err);
+    }
+  }, []);
+
+  return { results, loading, refresh: fetchHistory, removeResult } as const;
 }

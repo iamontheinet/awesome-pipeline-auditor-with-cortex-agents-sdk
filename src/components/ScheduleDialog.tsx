@@ -181,67 +181,25 @@ export function ScheduleDialog({
       <DialogContent dividers sx={{ p: 0 }}>
         {/* ---- New Schedule section ---- */}
         <Box sx={{ px: 3, py: 2 }}>
-          {/* Banner-style DB / Schema / Scopes — matches main audit page */}
-           <Box
+          {/* Banner-style DB / Schema + Scopes on second row */}
+          <Box
             sx={{
               px: 2,
               py: 1,
               borderRadius: 2,
               bgcolor: alpha(theme.palette.primary.main, 0.04),
               border: `1px solid ${alpha(theme.palette.primary.main, 0.12)}`,
-              display: "flex",
-              alignItems: "center",
-              gap: 1,
-              overflow: "hidden",
               mb: 2,
             }}
           >
-            <DatabaseIcon sx={{ fontSize: 18, color: "primary.main", flexShrink: 0 }} />
-            <Typography variant="caption" sx={{ fontWeight: 600, color: "text.secondary", fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: 0.5, flexShrink: 0 }}>
-              Auditing
-            </Typography>
-            <Chip
-              label={database || "No database"}
-              size="small"
-              sx={{
-                fontSize: "0.65rem",
-                height: 20,
-                fontWeight: 500,
-                bgcolor: alpha(theme.palette.info.main, 0.08),
-                color: "text.secondary",
-                border: `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
-                flexShrink: 0,
-              }}
-            />
-            {schema && (
-              <>
-                <Typography sx={{ color: alpha(theme.palette.text.secondary, 0.4), fontSize: "0.9rem", flexShrink: 0 }}>
-                  /
-                </Typography>
-                <Chip
-                  label={schema}
-                  size="small"
-                  sx={{
-                    fontSize: "0.65rem",
-                    height: 20,
-                    fontWeight: 500,
-                    bgcolor: alpha(theme.palette.info.main, 0.08),
-                    color: "text.secondary",
-                    border: `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
-                    flexShrink: 0,
-                  }}
-                />
-              </>
-            )}
-            {scope.length > 0 && (
-              <Typography sx={{ color: alpha(theme.palette.text.secondary, 0.4), fontSize: "0.9rem", flexShrink: 0 }}>
-                /
+            {/* Row 1: database / schema */}
+            <Stack direction="row" alignItems="center" spacing={1}>
+              <DatabaseIcon sx={{ fontSize: 18, color: "primary.main", flexShrink: 0 }} />
+              <Typography variant="caption" sx={{ fontWeight: 600, color: "text.secondary", fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: 0.5, flexShrink: 0 }}>
+                Auditing
               </Typography>
-            )}
-            {scope.map((s) => (
               <Chip
-                key={s}
-                label={SCOPE_LABELS[s] || s.replace(/_/g, " ")}
+                label={database || "No database"}
                 size="small"
                 sx={{
                   fontSize: "0.65rem",
@@ -253,7 +211,52 @@ export function ScheduleDialog({
                   flexShrink: 0,
                 }}
               />
-            ))}
+              {schema && (
+                <>
+                  <Typography sx={{ color: alpha(theme.palette.text.secondary, 0.4), fontSize: "0.9rem", flexShrink: 0 }}>
+                    /
+                  </Typography>
+                  <Chip
+                    label={schema}
+                    size="small"
+                    sx={{
+                      fontSize: "0.65rem",
+                      height: 20,
+                      fontWeight: 500,
+                      bgcolor: alpha(theme.palette.info.main, 0.08),
+                      color: "text.secondary",
+                      border: `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
+                      flexShrink: 0,
+                    }}
+                  />
+                </>
+              )}
+            </Stack>
+
+            {/* Row 2: scope chips — same styling as landing page header */}
+            {scope.length > 0 && (
+              <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+                <Typography variant="caption" color="text.secondary" sx={{ mr: 0.5, fontSize: "0.7rem", whiteSpace: "nowrap" }}>
+                  Scope:
+                </Typography>
+                {scope.map((s) => (
+                  <Chip
+                    key={s}
+                    label={SCOPE_LABELS[s] || s.replace(/_/g, " ")}
+                    size="small"
+                    sx={{
+                      fontSize: "0.7rem",
+                      height: 24,
+                      borderRadius: 1,
+                      fontWeight: 600,
+                      bgcolor: alpha(theme.palette.primary.main, 0.15),
+                      borderColor: theme.palette.primary.main,
+                      color: theme.palette.primary.main,
+                    }}
+                  />
+                ))}
+              </Stack>
+            )}
           </Box>
 
           {/* Interval presets */}

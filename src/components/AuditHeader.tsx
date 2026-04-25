@@ -29,7 +29,7 @@ import {
 } from "@mui/icons-material";
 import { useThemeMode } from "../ThemeContext";
 import { ScheduleDialog } from "./ScheduleDialog";
-import { useScheduler } from "../hooks/useScheduler";
+import type { useScheduler } from "../hooks/useScheduler";
 
 export type AuditScope =
   | "tables_freshness"
@@ -66,6 +66,7 @@ interface AuditHeaderProps {
   isAuditing: boolean;
   schedulePanelOpen: boolean;
   onToggleSchedulePanel: () => void;
+  scheduler: ReturnType<typeof useScheduler>;
 }
 
 export function AuditHeader({
@@ -76,6 +77,7 @@ export function AuditHeader({
   isAuditing,
   schedulePanelOpen,
   onToggleSchedulePanel,
+  scheduler,
 }: AuditHeaderProps) {
   const theme = useTheme();
   const { mode, toggleTheme } = useThemeMode();
@@ -96,8 +98,8 @@ export function AuditHeader({
   // Schedule dialog state
   const [scheduleOpen, setScheduleOpen] = useState(false);
 
-  // Scheduler hook
-  const { schedules, addSchedule, removeSchedule, toggleSchedule } = useScheduler();
+  // Scheduler from parent (shared instance)
+  const { schedules, addSchedule, removeSchedule, toggleSchedule } = scheduler;
 
   const toggleScope = (key: AuditScope) => {
     setScope((prev) =>
