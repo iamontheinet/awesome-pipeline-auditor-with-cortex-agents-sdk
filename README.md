@@ -179,8 +179,9 @@ Then open [http://localhost:5173](http://localhost:5173) in a browser window.
 * Real-time audit progress with tool execution tracking
 * AI-powered fix suggestions with multi-turn follow-up chat
 * Copy-to-clipboard on all code blocks
-* Recurring audit schedules with in-container scheduler
+* Recurring audit schedules with in-container scheduler (schedules and history auto-refresh every 60s)
 * Collapsible schedule panel with past audit history
+* Delete past audit reports from history (trash icon with optimistic removal)
 * Download audit reports as JSON
 * Email audit reports (requires Snowflake email integration)
 * Dark and light themes with localStorage persistence
