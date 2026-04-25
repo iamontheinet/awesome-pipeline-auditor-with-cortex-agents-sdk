@@ -11,9 +11,9 @@ import { existsSync } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import {
-  createSession,
-  type Session,
-  type SessionOptions,
+  createCortexCodeSession,
+  type CortexCodeSession,
+  type CortexCodeSessionOptions,
   type CortexCodeEvent,
   type PermissionResult,
   type HookOutput,
@@ -391,9 +391,9 @@ async function readOnlyGuard(
 // ---------------------------------------------------------------------------
 // Session management (one active session at a time)
 // ---------------------------------------------------------------------------
-let activeSession: Session | null = null;
+let activeSession: CortexCodeSession | null = null;
 let fixJobActive = false; // Only one suggest-fix job at a time
-let fixSession: Session | null = null; // Kept alive for follow-up chat
+let fixSession: CortexCodeSession | null = null; // Kept alive for follow-up chat
 
 // ---------------------------------------------------------------------------
 // Poll-based job store — replaces NDJSON streaming to work around SPCS
@@ -466,7 +466,7 @@ app.get("/api/schemas", (req, res) => {
 // ---------------------------------------------------------------------------
 // Auditor schema + table constants (used by both interactive and scheduled paths)
 // ---------------------------------------------------------------------------
-const AUDITOR_SCHEMA = process.env.AUDITOR_SCHEMA || "PIPELINE_AUDITOR_DB.AUDITOR";
+const AUDITOR_SCHEMA = process.env.AUDITOR_SCHEMA || "AUTOMATED_INTELLIGENCE.AUDITOR";
 const SCHEDULES_TABLE = `${AUDITOR_SCHEMA}.AUDIT_SCHEDULES`;
 const RESULTS_TABLE = `${AUDITOR_SCHEMA}.AUDIT_RESULTS`;
 
@@ -560,7 +560,7 @@ async function runAuditJob(
     { matcher: ".*", hooks: [progressHook] },
   ];
 
-  const options: SessionOptions = {
+  const options: CortexCodeSessionOptions = {
     connection,
     cwd: "/tmp",
     systemPrompt: buildSystemPrompt(database, scope, schema),
@@ -581,7 +581,7 @@ async function runAuditJob(
   try {
     console.log("Creating cortex session with connection:", connection);
     activeSession = await Promise.race([
-      createSession(options),
+      createCortexCodeSession(options),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error("createSession timed out after 60s")), 60_000)
       ),
@@ -866,7 +866,7 @@ Rules:
 
   try {
     const connection = DEFAULT_CONNECTION;
-    const ephemeralOptions: SessionOptions = {
+    const ephemeralOptions: CortexCodeSessionOptions = {
       connection,
       cwd: "/tmp",
       systemPrompt: `You are a Snowflake pipeline remediation expert. When given a finding, respond with a clear, actionable fix. Use SQL code blocks for any commands. Give the answer directly from your expertise. If the user asks you to run SQL, you may use sql_execute to run it against Snowflake. Target database: ${database}.`,
@@ -878,7 +878,7 @@ Rules:
     };
 
     const ephemeralSession = await Promise.race([
-      createSession(ephemeralOptions),
+      createCortexCodeSession(ephemeralOptions),
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error("createSession timed out after 30s")), 30_000)
       ),
@@ -1269,7 +1269,7 @@ async function runHeadlessAudit(
   const connection = DEFAULT_CONNECTION;
   const toolCounter = { count: 0, start: Date.now() };
 
-  const options: SessionOptions = {
+  const options: CortexCodeSessionOptions = {
     connection,
     cwd: "/tmp",
     systemPrompt: buildSystemPrompt(database, scope, schema),
@@ -1289,7 +1289,7 @@ async function runHeadlessAudit(
     settingSources: [],
   };
 
-  const session = await createSession(options);
+  const session = await createCortexCodeSession(options);
 
   const scopeLabels: Record<string, string> = {
     tables_freshness: "tables & freshness",
