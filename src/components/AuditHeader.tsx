@@ -189,6 +189,7 @@ export function AuditHeader({
         direction={{ xs: "column", md: "row" }}
         alignItems={{ md: "flex-start" }}
         spacing={2}
+        sx={{ maxWidth: 1200, mx: "auto", width: "100%" }}
       >
         {/* Logo */}
         <Stack
