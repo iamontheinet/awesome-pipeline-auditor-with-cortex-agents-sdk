@@ -61,7 +61,11 @@ if __name__ == "__main__":
         sys.exit(1)
     sql = sys.argv[1]
     try:
-        if os.path.exists(SPCS_TOKEN_PATH):
+        explicit_conn = os.environ.get("SNOW_CONNECTION", "default")
+        if explicit_conn != "default":
+            # Explicit connection requested (e.g. PAT) — use CLI even in SPCS
+            rows = run_via_cli(sql)
+        elif os.path.exists(SPCS_TOKEN_PATH):
             rows = run_via_connector(sql)
         else:
             rows = run_via_cli(sql)
