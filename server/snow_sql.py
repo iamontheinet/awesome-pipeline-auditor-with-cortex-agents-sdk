@@ -49,10 +49,11 @@ def run_via_cli(sql: str) -> list[dict]:
     import subprocess
     snow = os.environ.get("SNOW_PATH", "snow")
     connection = os.environ.get("SNOW_CONNECTION", "default")
-    raw = subprocess.check_output(
-        [snow, "sql", "-q", sql, "-c", connection, "--format", "json"],
-        text=True, timeout=30,
-    )
+    warehouse = os.environ.get("SNOWFLAKE_WAREHOUSE", "")
+    cmd = [snow, "sql", "-q", sql, "-c", connection, "--format", "json"]
+    if warehouse:
+        cmd.extend(["--warehouse", warehouse])
+    raw = subprocess.check_output(cmd, text=True, timeout=30)
     return json.loads(raw)
 
 if __name__ == "__main__":
