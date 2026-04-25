@@ -30,7 +30,7 @@ Use this as a starter project or template and extend or customize it. Also note 
 - **Python 3** (used by the SQL helper)
 - **Docker** (for SPCS deployment)
 - **Snow CLI** installed and configured with a named connection
-- [**Cortex Code CLI**](https://docs.snowflake.com/en/user-guide/cortex-code-agent-sdk/cortex-code-overview) (required by the Agent SDK)
+- [**Cortex Code CLI**](https://docs.snowflake.com/en/user-guide/cortex-code/cortex-code-cli) (required by the Agent SDK)
 - **Snowflake Account** with a role that has access to the database(s) you want to audit
 
 ## Setup Steps
