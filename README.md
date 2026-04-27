@@ -162,7 +162,11 @@ Then open [http://localhost:5173](http://localhost:5173) in a browser window.
 
 ### Demo
 
-> TODO: Add demo video
+
+
+https://github.com/user-attachments/assets/e46d724e-e58a-4696-9e76-0c17f8e060f8
+
+
 
 ### Usage
 
